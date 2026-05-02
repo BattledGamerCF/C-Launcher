@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg/master/scripts/vcpkg.schema.json",
+  "name": "genesis-launcher",
+  "version": "1.0.0",
+  "dependencies": [
+    "curl",
+    "openssl"
+  ],
+  "builtin-baseline": "3265c187c74314aa7f640ac9a0c9c6b19ec4e5c1"
+}

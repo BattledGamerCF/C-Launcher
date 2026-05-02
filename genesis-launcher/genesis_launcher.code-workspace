@@ -1,0 +1,18 @@
+{
+  "folders": [{ "path": "." }],
+  "settings": {
+    "C_Cpp.default.cppStandard": "c++20",
+    "C_Cpp.default.intelliSenseMode": "macos-clang-arm64",
+    "cmake.configureArgs": ["-DCMAKE_BUILD_TYPE=Debug"],
+    "cmake.generator": "Ninja",
+    "editor.formatOnSave": true,
+    "[cpp]": { "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd" }
+  },
+  "extensions": {
+    "recommendations": [
+      "llvm-vs-code-extensions.vscode-clangd",
+      "ms-vscode.cmake-tools",
+      "twxs.cmake"
+    ]
+  }
+}
