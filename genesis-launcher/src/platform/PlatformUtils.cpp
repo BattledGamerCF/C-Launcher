@@ -319,6 +319,11 @@ Result<SpawnedProcess> spawn_process(const std::string& exe,
             "fork() failed", std::to_string(errno)));
 
     if (pid == 0) {
+        // Become session + process-group leader so the JVM and any
+        // subprocesses it spawns share our PGID. The parent can then
+        // signal the whole group via killpg(pid, …) to take down the
+        // entire JVM tree without leaving orphans.
+        if (setsid() == -1) (void)setpgid(0, 0);
         if (!working_dir.empty()) (void)!chdir(working_dir.c_str());
         std::vector<char*> argv;
         std::string exe_copy = exe;

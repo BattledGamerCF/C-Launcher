@@ -1,0 +1,150 @@
+You are working inside the C++ Minecraft launcher project (Genesis). The process ownership layer is now partially implemented (ProcessHandle, AsyncLauncher, ProcessMonitor, UiState integration, non-blocking JVM launch, PID tracking, and lifecycle transitions exist), but the system is still incomplete and needs stabilization, correctness fixes, and UI/UX integration polish.
+
+## Objective
+Complete and harden the **Process Ownership Layer v1**, ensuring:
+- True OS-backed process lifecycle correctness (no UI-driven fake state)
+- Deterministic ownership of each Minecraft/JVM instance
+- Clean separation between launcher, monitor, and UI
+- Reliable PID tracking, termination, and state transitions
+- Stable cross-platform behavior (macOS, Windows, Linux)
+- Resource-efficient monitoring suitable for low-memory machines (target: M2 MacBook Air 8GB class systems)
+
+---
+
+## Core Problems to Solve
+
+### 1. Process Lifecycle Consistency
+Ensure there is exactly ONE source of truth:
+- OS process state (ProcessHandle)
+- NOT UiState
+- NOT AsyncLauncher heuristics
+- NOT ProcessMonitor guesses
+
+Fix any remaining cases where:
+- UI state can drift from actual process state
+- monitor thread can override real OS state incorrectly
+- "Detached" or "Zombie" states are ambiguous or incorrectly assigned
+
+---
+
+### 2. Race Conditions / Double Ownership
+Audit and fix:
+- Multiple watchers attaching to same ProcessHandle
+- AsyncLauncher + ProcessMonitor double-updating state
+- Any possibility of two UI actions controlling same PID
+
+Guarantee:
+- 1 ProcessHandle == 1 JVM instance == 1 owner chain
+- No duplicate watchers
+- No duplicate stop/kill execution
+
+---
+
+### 3. Safe Stop / Kill Semantics
+Standardize termination pipeline:
+
+Stop flow must be:
+1. graceful terminate()
+2. wait grace period (configurable, default ~3s)
+3. forced kill()
+4. final state resolution from OS
+
+Fix any inconsistencies where:
+- stop is only UI state change
+- kill happens without OS confirmation
+- process is assumed dead before verification
+
+---
+
+### 4. Monitor Efficiency (Critical for low-resource machines)
+ProcessMonitor must be optimized for:
+- low CPU overhead (target <1% idle usage)
+- minimal polling frequency (adaptive or backoff-based)
+- avoiding per-instance thread explosion
+
+Refactor if needed:
+- prefer single-thread multiplexed monitoring
+- avoid per-instance polling loops
+- batch sampling for all instances
+
+---
+
+### 5. Cross-Platform Process Abstraction
+Ensure ProcessHandle correctness:
+- macOS: POSIX process group handling is correct (no leaks)
+- Windows: handle cleanup is safe (TerminateProcess fallback)
+- Linux: waitpid correctness (no zombie processes)
+
+Add guards for:
+- orphaned processes
+- zombie detection reconciliation
+- PID reuse safety
+
+---
+
+### 6. UI Consistency Contract
+InstanceDashboard must reflect ONLY:
+- ProcessHandle state
+- last known OS heartbeat
+- actual PID validity
+
+Remove any reliance on:
+- AsyncLauncher internal maps
+- UiState “assumptions”
+- cached lifecycle flags that are not OS-backed
+
+UI rules:
+- if ProcessHandle is null → instance is NOT running
+- if OS says dead → UI must immediately reflect dead state
+- no optimistic UI for process lifecycle
+
+---
+
+### 7. Resource Usage Constraints
+Launcher must remain lightweight:
+- avoid blocking threads per instance
+- avoid high-frequency polling loops
+- avoid unnecessary memory retention in ProcessMonitor
+
+Prefer:
+- event-driven transitions
+- shared monitoring loop
+- bounded queues (ring buffers only)
+
+---
+
+## Required Deliverables
+
+1. Fix ProcessHandle as absolute source of truth
+2. Refactor ProcessMonitor into efficient shared scheduler model (if needed)
+3. Remove any UI-driven lifecycle authority
+4. Harden AsyncLauncher ownership guarantees (single watcher per handle)
+5. Ensure stop/kill semantics are OS-verified
+6. Ensure no zombie or orphan processes remain untracked
+7. Confirm cross-platform correctness assumptions explicitly
+8. Ensure InstanceDashboard reflects only validated OS-backed state
+9. Keep memory/CPU footprint minimal (design for low-end machines)
+
+---
+
+## Constraints
+
+- Do NOT introduce new heavy frameworks
+- Do NOT add background services or daemons
+- Do NOT increase thread count per instance model
+- Prefer simplification over feature expansion
+- Keep architecture tight and deterministic
+
+---
+
+## Expected Outcome
+
+After this pass:
+- Process lifecycle is deterministic and OS-true
+- UI is purely a reflection layer (no authority)
+- No race conditions in start/stop ownership
+- Monitoring is efficient and scalable
+- Launcher behaves correctly under rapid start/stop cycles
+- No phantom or zombie instances appear in UI
+
+This is a stabilization + correctness pass, not a feature expansion.

@@ -9,6 +9,7 @@
 #include <mutex>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <memory>
 
 namespace genesis::core { class Launcher; }
@@ -69,12 +70,35 @@ private:
     std::vector<std::unique_ptr<Task>>    tasks_;
     std::atomic<bool>                     shutting_down_{false};
 
+    // ─────────────────────────────────────────────────────────────────────
+    // Ownership invariants (do not weaken without re-deriving the proof):
+    //   • At most ONE shared_ptr<jvm::ProcessHandle> exists per instance_id
+    //     in handles_ at any moment. start_launch() bails out if one is
+    //     present; the watcher thread is the sole code path that erases.
+    //   • Exactly ONE watcher thread is spawned per launch and it is the
+    //     SOLE caller of handle->wait() in normal flow. Stop workers may
+    //     call wait() too, but ProcessHandle::wait() is gated so only the
+    //     first OS reap actually runs.
+    //   • UiState lifecycle is downstream of the handle's transition
+    //     channel — no other code path may publish lifecycle states after
+    //     register_handle_().
+    //   • watchers_ entries are reaped in poll() once their `done` atomic
+    //     flips, so the vector cannot grow unboundedly.
+    // ─────────────────────────────────────────────────────────────────────
+    struct Watcher {
+        std::unique_ptr<std::thread> thread;
+        std::atomic<bool>            done{false};
+    };
+
     // Per-instance OS-level handle ownership. 1:1 with UiState.instances.
     mutable std::mutex                                                       handles_mu_;
     std::unordered_map<std::string, std::shared_ptr<jvm::ProcessHandle>>     handles_;
-    // Watcher threads that block on handle->wait() and translate exit
-    // events back into UiState. Joined at shutdown.
-    std::vector<std::unique_ptr<std::thread>>                                watchers_;
+    std::vector<std::unique_ptr<Watcher>>                                    watchers_;
+    // Synchronous in-flight set for stop ops. UiState.ops is eventually
+    // consistent (queued reducer), so a rapid second click can race past
+    // an ops-map check. This set is checked + mutated atomically under
+    // handles_mu_ on the UI thread, giving us strict double-click safety.
+    std::unordered_set<std::string>                                          inflight_stops_;
 };
 
 }

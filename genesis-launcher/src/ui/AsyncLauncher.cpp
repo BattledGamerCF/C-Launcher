@@ -64,12 +64,25 @@ void AsyncLauncher::spawn(std::string op_id,
 }
 
 void AsyncLauncher::poll() {
-    std::lock_guard<std::mutex> l(mu_);
-    for (auto it = tasks_.begin(); it != tasks_.end();) {
-        if ((*it)->done.load()) {
-            if ((*it)->thread && (*it)->thread->joinable()) (*it)->thread->join();
-            it = tasks_.erase(it);
-        } else ++it;
+    {
+        std::lock_guard<std::mutex> l(mu_);
+        for (auto it = tasks_.begin(); it != tasks_.end();) {
+            if ((*it)->done.load()) {
+                if ((*it)->thread && (*it)->thread->joinable()) (*it)->thread->join();
+                it = tasks_.erase(it);
+            } else ++it;
+        }
+    }
+    // Reap completed watcher threads so watchers_ does not grow
+    // monotonically across launches.
+    {
+        std::lock_guard<std::mutex> l(handles_mu_);
+        for (auto it = watchers_.begin(); it != watchers_.end();) {
+            if ((*it)->done.load()) {
+                if ((*it)->thread && (*it)->thread->joinable()) (*it)->thread->join();
+                it = watchers_.erase(it);
+            } else ++it;
+        }
     }
 }
 
@@ -85,13 +98,13 @@ void AsyncLauncher::shutdown() {
             }
         }
     }
-    std::vector<std::unique_ptr<std::thread>> w_drain;
+    std::vector<std::unique_ptr<Watcher>> w_drain;
     {
         std::lock_guard<std::mutex> l(handles_mu_);
         w_drain.swap(watchers_);
     }
-    for (auto& t : w_drain) {
-        if (t && t->joinable()) t->join();
+    for (auto& w : w_drain) {
+        if (w && w->thread && w->thread->joinable()) w->thread->join();
     }
 
     std::vector<std::unique_ptr<Task>> drain;
@@ -278,14 +291,21 @@ void AsyncLauncher::run_launch_worker(std::string instance_id) {
     monitor::ProcessMonitor::global().track(instance_id, handle);
 
     // Watcher thread: blocks on wait(), then publishes exit + cleans up.
-    auto watcher = std::make_unique<std::thread>(
-        [this, handle, instance_id, corr, pid]() {
+    // ProcessHandle::wait()'s one-time gate guarantees this is the only
+    // path that performs the OS reap, even if the stop worker also calls
+    // wait() concurrently.
+    auto watcher = std::make_unique<Watcher>();
+    Watcher* raw_w = watcher.get();
+    watcher->thread = std::make_unique<std::thread>(
+        [this, raw_w, handle, instance_id, corr, pid]() {
         auto wait_res = handle->wait();
         int32_t exit_code = wait_res.is_ok() ? wait_res.value()
                                               : handle->exit_code();
         log->info("[corr=" + corr + "] Watcher exit pid=" + std::to_string(pid) +
                   " code=" + std::to_string(exit_code));
 
+        // Untrack BEFORE unregister so the monitor cannot query a
+        // freed handle on a (potentially reused) PID.
         monitor::ProcessMonitor::global().untrack(instance_id);
 
         std::string crash_reason;
@@ -295,6 +315,7 @@ void AsyncLauncher::run_launch_worker(std::string instance_id) {
         ust::dispatch::complete_op("launch:" + instance_id);
 
         unregister_handle_(instance_id);
+        raw_w->done.store(true);   // poll() will join + erase
     });
 
     {
@@ -312,11 +333,34 @@ void AsyncLauncher::start_stop(std::string instance_id) {
         ust::dispatch::push_toast("No live process; cleared placeholder", false);
         return;
     }
+    // Strict double-click guard. UiState.ops is eventually consistent
+    // (reducer queue), so checking it would leave a race window between
+    // the click and the queued op materializing. Use a synchronous set
+    // protected by handles_mu_ instead — claim or bail in one atomic step.
+    {
+        std::lock_guard<std::mutex> l(handles_mu_);
+        if (!inflight_stops_.insert(instance_id).second) {
+            ust::dispatch::push_toast("Stop already in progress", false);
+            return;
+        }
+    }
     spawn("stop:" + instance_id, "Stop " + instance_id,
           [this, instance_id]() { run_stop_worker(instance_id); });
 }
 
 void AsyncLauncher::run_stop_worker(std::string instance_id) {
+    // Always release the in-flight claim regardless of how this exits
+    // (success, error, or exception), so the user can retry Stop after
+    // a transient failure. The shared_ptr-with-deleter trick gives us
+    // RAII cleanup from within a member function (a local struct here
+    // would not have access to private members).
+    auto release_inflight = std::shared_ptr<void>(
+        reinterpret_cast<void*>(0x1),
+        [this, instance_id](void*) {
+            std::lock_guard<std::mutex> l(handles_mu_);
+            inflight_stops_.erase(instance_id);
+        });
+
     auto handle = handle_for(instance_id);
     if (!handle) {
         ust::dispatch::complete_op("stop:" + instance_id);

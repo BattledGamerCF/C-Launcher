@@ -265,15 +265,17 @@ void push_instance_sample(std::string id, float ram_mb, float cpu_pct) {
 }
 
 void set_instance_exit(std::string id, int32_t exit_code, std::string crash_reason) {
+    // Exit metadata only — the authoritative terminal state (Stopped /
+    // Crashed / Detached / Zombie) is published by the ProcessHandle's
+    // transition channel. Overwriting `state` here would clobber a
+    // handle-driven Detached/Zombie classification with a heuristic
+    // Stopped/Crashed and break the "handle → UiState" invariant.
     REDUCER({
         auto& live = s.instances[id];
         live.instance_id  = id;
         live.exit_code    = exit_code;
         live.crash_reason = crash_reason;
         live.ended_us     = now_us();
-        live.state = (exit_code == 0 && crash_reason.empty())
-                       ? InstanceRuntimeState::Stopped
-                       : InstanceRuntimeState::Crashed;
     });
 }
 

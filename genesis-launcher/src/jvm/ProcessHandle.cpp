@@ -187,10 +187,18 @@ Result<void> ProcessHandle::terminate() {
     }
     return Result<void>::ok();
 #else
-    if (::kill(static_cast<pid_t>(pid_), SIGTERM) == 0) return Result<void>::ok();
-    if (errno == ESRCH) return Result<void>::ok();   // already gone
+    // Signal the entire process group (we made the child a session leader
+    // at spawn time, so PGID == PID). This takes down any JVM-spawned
+    // subprocesses, preventing orphans. Falls back to per-PID signal if
+    // the group doesn't exist for any reason.
+    pid_t pg = static_cast<pid_t>(pid_);
+    if (::killpg(pg, SIGTERM) == 0) return Result<void>::ok();
+    if (errno == ESRCH) {
+        if (::kill(pg, SIGTERM) == 0) return Result<void>::ok();
+        if (errno == ESRCH) return Result<void>::ok();
+    }
     return Result<void>::err(Error::make(Error::Code::ProcessError,
-        "kill(SIGTERM) failed", std::to_string(errno)));
+        "killpg(SIGTERM) failed", std::to_string(errno)));
 #endif
 }
 
@@ -208,10 +216,14 @@ Result<void> ProcessHandle::kill() {
     }
     return Result<void>::ok();
 #else
-    if (::kill(static_cast<pid_t>(pid_), SIGKILL) == 0) return Result<void>::ok();
-    if (errno == ESRCH) return Result<void>::ok();
+    pid_t pg = static_cast<pid_t>(pid_);
+    if (::killpg(pg, SIGKILL) == 0) return Result<void>::ok();
+    if (errno == ESRCH) {
+        if (::kill(pg, SIGKILL) == 0) return Result<void>::ok();
+        if (errno == ESRCH) return Result<void>::ok();
+    }
     return Result<void>::err(Error::make(Error::Code::ProcessError,
-        "kill(SIGKILL) failed", std::to_string(errno)));
+        "killpg(SIGKILL) failed", std::to_string(errno)));
 #endif
 }
 
