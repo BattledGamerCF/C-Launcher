@@ -68,7 +68,21 @@ void ProcessHandle::on_transition(TransitionFn fn) {
 }
 
 void ProcessHandle::transition_to_(ProcessState next, int32_t exit_code) {
-    ProcessState prev = state_.exchange(next);
+    // Terminal states are absorbing: once Stopped/Crashed/Zombie/Detached
+    // has been published, no further transition is permitted. This is
+    // proven necessary by runtime test inv_zombie_then_reap which
+    // observed Zombie -> Stopped overwrite when wait() reaped a process
+    // previously marked Zombie via mark_zombie(). CAS guards against
+    // concurrent transitions racing past a terminal commit.
+    auto is_terminal = [](ProcessState s) {
+        return s == ProcessState::Stopped  || s == ProcessState::Crashed ||
+               s == ProcessState::Zombie   || s == ProcessState::Detached;
+    };
+    ProcessState prev = state_.load();
+    while (true) {
+        if (is_terminal(prev)) return;     // absorbed; no second emission
+        if (state_.compare_exchange_weak(prev, next)) break;
+    }
     if (exit_code >= 0) exit_code_.store(exit_code);
     if (prev == next) return;
     TransitionFn fn;
