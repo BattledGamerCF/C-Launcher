@@ -327,13 +327,17 @@ void draw_console(genesis::core::Launcher& /*launcher*/) {
     // Filter dropdown
     const char* levels[] = {"all", "info+", "warn+", "error+"};
     ImGui::SetNextItemWidth(80);
-    if (ImGui::Combo("##lvl", &cs.level_filter, levels, 4))
+    if (ImGui::Combo("##lvl", &cs.level_filter, levels, 4)) {
+        g_console_buf.clear();
         g_console_last_id = 0;   // re-snapshot from start with new filter
+    }
 
     ImGui::SameLine();
     ImGui::SetNextItemWidth(180);
-    if (ImGui::InputTextWithHint("##search", "search", cs.search_buffer, sizeof(cs.search_buffer)))
+    if (ImGui::InputTextWithHint("##search", "search", cs.search_buffer, sizeof(cs.search_buffer))) {
+        g_console_buf.clear();
         g_console_last_id = 0;
+    }
 
     ImGui::SameLine();
     bool paused = stream.paused();

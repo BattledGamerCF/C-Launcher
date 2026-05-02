@@ -1,0 +1,176 @@
+C++ Minecraft Launcher (Genesis-style, HMCCC-inspired) — System Efficiency + Security Isolation Spec
+
+You are implementing a cross-platform C++ Minecraft launcher modeled after HMCCC-style architecture, with extreme emphasis on low system resource usage, deterministic performance tuning, and a sandboxed experimental execution environment for testing untrusted Minecraft clients.
+
+This launcher is intended for macOS (Apple Silicon + Intel), Windows, and Linux. The primary runtime is Java-based (Minecraft + modded clients), but the launcher itself must remain lightweight, modular, and aggressively optimized.
+
+──────────────────────────────────────────────────────────────────────────────
+1. CORE DESIGN GOALS (NON-NEGOTIABLE)
+──────────────────────────────────────────────────────────────────────────────
+
+- Minimize RAM footprint of the launcher process (<150MB idle target)
+- Avoid background polling loops; prefer event-driven or scheduled timers
+- Lazy-load UI components and metadata (versions, modpacks, logs)
+- Cache all manifest and version metadata locally with diff-based updates
+- Never block UI thread; all I/O must be async or worker-thread based
+- Reduce disk writes (batch logs, defer telemetry writes, compress cache)
+- Keep Java process management separate from launcher UI lifecycle
+- Prioritize deterministic behavior across OS platforms
+
+──────────────────────────────────────────────────────────────────────────────
+2. JAVA RUNTIME MANAGEMENT (ZULU / OPENJDK)
+──────────────────────────────────────────────────────────────────────────────
+
+The launcher must support automatic Java detection and provisioning using Azul Zulu OpenJDK distributions.
+
+Rules:
+
+- On macOS:
+  - Prefer Azul Zulu builds (Azul Systems OpenJDK distribution)
+  - Automatically detect architecture:
+    - Apple Silicon → ARM64 Zulu builds
+    - Intel → x64 Zulu builds
+  - Maintain fallback detection for system-installed Java (/usr/libexec/java_home)
+  - Allow multiple installed Java versions and auto-select per profile
+
+- Supported Java versions:
+  - Java 8 (legacy modpacks)
+  - Java 11 (mid-era modded clients)
+  - Java 17 (modern Minecraft 1.18+ standard)
+  - Java 21+ (experimental performance profiles where applicable)
+
+- License constraint:
+  - Only use redistributable Zulu builds (OpenJDK-based, no Oracle redistribution issues)
+  - Do not bundle restricted Oracle binaries
+
+──────────────────────────────────────────────────────────────────────────────
+3. AUTO-ADJUST JAVA FLAGS SYSTEM (PERFORMANCE ENGINE)
+──────────────────────────────────────────────────────────────────────────────
+
+Implement a "Dynamic JVM Flag Optimizer" that configures launch arguments based on:
+
+- Available system RAM
+- CPU core count
+- GPU availability (optional detection)
+- Minecraft version
+- Modloader type (Vanilla / Forge / Fabric / NeoForge)
+- World complexity profile (if known: server, client, heavy modpack, etc.)
+
+Rules:
+
+A. Memory allocation
+- Set heap dynamically:
+  - Low-end systems: 2–4GB cap
+  - Mid-range: 4–6GB
+  - High-end: 6–10GB (never exceed 70% of system RAM)
+- Always reserve OS headroom (macOS: minimum 2GB free)
+
+B. GC tuning presets
+- Java 8–11: G1GC baseline tuning
+- Java 17+: G1GC or ZGC fallback depending on memory size
+- Enable:
+  - -XX:+UseG1GC (default)
+  - -XX:MaxGCPauseMillis adaptive (100–200ms range)
+  - -XX:+ParallelRefProcEnabled
+
+C. Auto-profile switching
+- Detect crash loops → downgrade GC aggressiveness
+- Detect stutter → increase heap incrementally
+- Detect long pauses → adjust GC pause target upward
+
+D. Flags must be generated at runtime, not hardcoded
+
+──────────────────────────────────────────────────────────────────────────────
+4. "EXPERIMENTAL ISOLATED ENVIRONMENT" (SECURE SANDBOX MODE)
+──────────────────────────────────────────────────────────────────────────────
+
+Implement a feature called:
+
+    Experimental Sandbox Mode (ESM)
+
+Purpose:
+Allow execution of untrusted Minecraft clients, hacked clients, modpacks, or experimental builds in a contained environment to prevent system compromise.
+
+IMPORTANT: This is a defensive containment system, not execution validation.
+
+A. Isolation model (must be OS-aware):
+
+macOS:
+- Use sandbox-exec profile OR lightweight macOS seatbelt restrictions
+- Optional App Sandbox container directory per instance
+- Disable file system access outside:
+  ~/Library/Application Support/<launcher>/sandbox/<instance>
+
+Windows:
+- Use restricted user token + low integrity process
+- Optional Windows AppContainer (if available)
+- Block registry write access outside sandbox scope
+
+Linux:
+- Use namespace isolation where possible (unprivileged user namespace fallback)
+- Restrict filesystem with bind mounts or bubblewrap-style isolation if available
+
+B. Network control:
+- Default: allow outbound only (Minecraft servers)
+- Optional toggle:
+  - "Offline Sandbox" → completely block network access
+- No inbound ports ever allowed in sandbox mode
+
+C. File system containment:
+- Separate virtual game directory per sandbox instance
+- No access to main launcher directories
+- No access to system or user home directories outside sandbox root
+
+D. Process containment rules:
+- Sandbox JVM must run as child process with restricted permissions
+- Kill switch if:
+  - unexpected child process spawn detected
+  - filesystem escape attempt detected (path traversal attempts)
+
+E. Logging:
+- Full audit log of sandbox activity:
+  - file access attempts
+  - network attempts
+  - process spawning attempts
+- Logs are immutable per session
+
+F. UI labeling:
+- Clearly label sandbox instances as:
+  "ISOLATED ENVIRONMENT — UNTRUSTED CODE EXECUTION"
+
+──────────────────────────────────────────────────────────────────────────────
+5. LAUNCHER RESOURCE OPTIMIZATION (GLOBAL)
+──────────────────────────────────────────────────────────────────────────────
+
+- Use memory pooling for repeated JSON parsing (version manifests)
+- Avoid re-rendering full UI tree on minor state updates
+- Virtualize all lists (modpacks, versions, logs)
+- Compress cached metadata using fast LZ4-style compression
+- Lazy-load mod metadata only when expanded
+- Do not keep Java process handles open unnecessarily
+- Reuse JVM arguments builder object
+
+──────────────────────────────────────────────────────────────────────────────
+6. FAILURE SAFETY RULES
+──────────────────────────────────────────────────────────────────────────────
+
+- If Java is missing → offer download of Zulu build, do not crash
+- If sandbox mode fails to initialize → fall back to "warn-only mode"
+- If JVM flags fail → retry with minimal safe preset
+- Never silently execute untrusted code outside sandbox mode
+- Never escalate privileges automatically
+
+──────────────────────────────────────────────────────────────────────────────
+7. OUTPUT REQUIREMENTS
+──────────────────────────────────────────────────────────────────────────────
+
+Launcher must expose:
+
+- JVM profile inspector (what flags were chosen and why)
+- Sandbox session inspector (what restrictions are active)
+- Resource monitor (RAM + CPU usage per instance)
+- Debug export bundle (sanitized logs only)
+
+──────────────────────────────────────────────────────────────────────────────
+END SPEC
+──────────────────────────────────────────────────────────────────────────────

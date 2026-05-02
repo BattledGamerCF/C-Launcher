@@ -1,5 +1,6 @@
 #include "genesis/core/Launcher.hpp"
 #include "genesis/ui/MainWindow.hpp"
+#include "genesis/ui/Shell.hpp"
 #include "genesis/platform/PlatformUtils.hpp"
 #include "genesis/logging/Logger.hpp"
 
@@ -119,6 +120,7 @@ int main(int, char**)
     platform_shutdown();
 #endif
 
+    genesis::ui::shell::shutdown();
     launcher.shutdown();
     return 0;
 }

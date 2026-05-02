@@ -1,5 +1,6 @@
 #include "genesis/logging/Logger.hpp"
 #include "genesis/platform/PlatformUtils.hpp"
+#include "genesis/ui/LogStream.hpp"
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/sinks/rotating_file_sink.h>
@@ -49,6 +50,10 @@ void init_logging(const std::string& log_dir, bool also_stdout) {
     s_root_logger->flush_on(spdlog::level::warn);
     spdlog::register_logger(s_root_logger);
     spdlog::set_default_logger(s_root_logger);
+
+    // Install the UI streaming sink so log records are mirrored into the
+    // in-memory LogStream consumed by the console region.
+    ui::log::install_into_root_logger();
 }
 
 void shutdown_logging() {

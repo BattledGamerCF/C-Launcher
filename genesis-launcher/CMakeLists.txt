@@ -44,6 +44,19 @@ set(GENESIS_SOURCES
     src/ui/InstanceView.cpp
     src/ui/DownloadView.cpp
     src/ui/SettingsView.cpp
+    src/ui/Theme.cpp
+    src/ui/UiState.cpp
+    src/ui/LogStream.cpp
+    src/ui/ProcessMonitor.cpp
+    src/ui/AsyncLauncher.cpp
+    src/ui/Widgets.cpp
+    src/ui/Shell.cpp
+    src/ui/views/InstanceDashboard.cpp
+    src/ui/views/ModpackView.cpp
+    src/ui/views/VersionView.cpp
+    src/ui/views/LogView.cpp
+    src/ui/views/DiagnosticsView.cpp
+    src/ui/views/SettingsTab.cpp
 )
 
 if(GENESIS_PLATFORM_WINDOWS)
