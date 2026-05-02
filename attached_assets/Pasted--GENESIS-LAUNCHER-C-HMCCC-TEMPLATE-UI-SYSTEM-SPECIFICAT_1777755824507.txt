@@ -1,0 +1,250 @@
+# GENESIS LAUNCHER (C++ / HMCCC TEMPLATE) — UI SYSTEM SPECIFICATION
+
+This document defines the **UI architecture, interaction model, and rendering requirements** for a high-performance Minecraft launcher written in C++ using HMCCC as the base template.
+
+The goal is not “a launcher UI that looks nice,” but a **production-grade control surface for modded Minecraft environments** that behaves like a lightweight desktop OS for game instances.
+
+---
+
+# 1. CORE UI PHILOSOPHY
+
+The UI is a **state-driven system**, not a static interface.
+
+Rules:
+- Every UI element is a reflection of runtime state (no fake/static screens)
+- No blocking UI calls; everything is async
+- UI must remain responsive under:
+  - instance launch
+  - file verification
+  - modpack sync
+  - log streaming
+
+The launcher is effectively a **process control dashboard disguised as a game launcher**
+
+---
+
+# 2. MAIN UI LAYOUT (SHELL ARCHITECTURE)
+
+The application is split into 4 persistent regions:
+
+## 2.1 LEFT NAVIGATION RAIL (GLOBAL STATE)
+Always visible.
+
+Contains:
+- Instances
+- Modpacks
+- Versions
+- Logs
+- Settings
+- Diagnostics
+
+Behavior:
+- Reflects current system state (e.g. active instance highlighted)
+- Supports live badges:
+  - "running"
+  - "syncing"
+  - "error"
+  - "outdated"
+
+---
+
+## 2.2 CENTER WORKSPACE (DYNAMIC VIEWPORT)
+
+This is the primary render surface.
+
+Modes:
+- Instance Dashboard
+- Modpack Editor
+- Version Manager
+- Log Stream Viewer
+- Diagnostics Panel
+
+Rules:
+- Only ONE mode active at a time
+- Mode transitions must be animated state transitions (no instant swaps)
+- State must persist across navigation
+
+---
+
+## 2.3 RIGHT INSPECTOR PANEL (CONTEXT-AWARE)
+
+Always reflects selected entity:
+
+Examples:
+- selected instance → JVM args, memory, runtime state
+- selected mod → dependency graph, conflicts
+- selected log entry → full trace + stack expansion
+- selected version → patch diff view
+
+Rules:
+- Must update live as selection changes
+- Must not block main UI thread
+
+---
+
+## 2.4 BOTTOM CONSOLE (STREAMING SYSTEM LOG)
+
+Real-time system output:
+- Minecraft logs
+- launcher logs
+- mod loader logs
+- error traces
+- network sync logs
+
+Features:
+- filterable log levels
+- search
+- pause/resume stream
+- scroll lock
+- export logs
+
+This is a **first-class debugging surface**, not decoration.
+
+---
+
+# 3. INSTANCE DASHBOARD (CORE VIEW)
+
+Each Minecraft instance is a card-based live object:
+
+Each card shows:
+- instance name
+- version
+- modpack
+- RAM usage (live)
+- CPU usage (live)
+- state (running / stopped / crashed / syncing)
+
+Actions:
+- Launch
+- Stop
+- Restart
+- Open logs
+- Edit config
+
+Rules:
+- Actions must be async with optimistic UI updates
+- Failed actions must rollback UI state with explicit error reason
+
+---
+
+# 4. MODPACK SYSTEM UI
+
+Modpacks are treated as dependency graphs, not folders.
+
+UI must include:
+- dependency tree viewer
+- conflict detection panel
+- version compatibility matrix
+- install/uninstall queue system
+
+Important:
+- Mod install is a queued transaction
+- Partial installs must never appear as "complete"
+- UI must reflect staging state explicitly
+
+---
+
+# 5. VERSION MANAGEMENT UI
+
+Version system behaves like a controlled runtime selector:
+
+Features:
+- version list (vanilla + modded + custom builds)
+- dependency mapping per version
+- downgrade warnings
+- compatibility heatmap
+
+Rules:
+- switching versions must validate mod compatibility BEFORE commit
+- invalid switches must produce structured error state (not popup-only)
+
+---
+
+# 6. LOG SYSTEM UI
+
+Log viewer must behave like a forensic debugger:
+
+Capabilities:
+- structured JSON log view
+- raw text view
+- stack trace grouping
+- timeline view of events
+
+Enhancements:
+- clickable stack frames
+- correlation ID linking
+- highlight error causality chains
+
+---
+
+# 7. DIAGNOSTICS MODE (ADVANCED UI)
+
+A special mode for failure analysis:
+
+Shows:
+- instance health graph
+- memory pressure timeline
+- mod conflict graph
+- crash root cause inference
+
+Must support:
+- snapshot capture
+- replayable session view
+
+---
+
+# 8. UI STATE SYSTEM (CRITICAL)
+
+All UI is driven by a centralized state model:
+
+Entities:
+- InstanceState
+- ModpackState
+- VersionState
+- LogStreamState
+
+Rules:
+- no direct DOM/UI mutation outside state layer
+- all updates must flow through state reducer pipeline
+- async operations must have:
+  - pending
+  - success
+  - error states explicitly modeled
+
+---
+
+# 9. PERFORMANCE RULES
+
+- UI must remain responsive under 10,000+ log entries/sec stream
+- virtualization required for all lists
+- no full re-renders of large panels
+- logs must be streamed incrementally, not reloaded
+
+---
+
+# 10. ERROR HANDLING (UI LAYER)
+
+All errors must be rendered as structured panels:
+
+Must include:
+- error code
+- subsystem
+- correlation ID
+- suggested action (if available)
+
+No generic "something went wrong" messages allowed.
+
+---
+
+# 11. DESIGN INTENT
+
+This UI is:
+- a control plane
+- a debugging instrument
+- a runtime management surface
+
+NOT:
+- a decorative launcher
+- a static menu system
+
+Every pixel reflects system truth.
