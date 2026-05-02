@@ -1,0 +1,78 @@
+You are working on the C++ launcher stabilization layer (ProcessHandle / AsyncLauncher / ProcessMonitor / UiState integration).
+
+Focus ONLY on correctness, lifecycle safety, and preventing concurrency/process leaks. Do NOT expand scope, add features, or redesign UI architecture.
+
+────────────────────────────────────
+CURRENT TASK: V1 STABILIZATION HARDENING (FINAL PASS)
+────────────────────────────────────
+
+You will fix ONLY the following 4 verified issues:
+
+1) STOP DOUBLE-CLICK / DOUBLE-STOP RACE
+- Ensure stop/start cannot spawn multiple concurrent stop workers for the same ProcessHandle
+- Must be atomic claim (no "check then act" patterns)
+- Must be safe under UI rapid input bursts
+
+2) WATCHER THREAD LEAK
+- Ensure watcher threads are always reaped
+- No accumulation in any container (vector/map)
+- Completed watchers must be removed deterministically
+- Must not require shutdown() to clean them
+
+3) PROCESS GROUP ORPHANS (POSIX)
+- JVM subprocesses MUST NOT survive parent termination
+- Ensure proper session/process-group ownership
+- Use setsid() or equivalent + kill process group, not single PID
+- Must work on macOS + Linux
+- Windows fallback must still fully terminate tree where possible
+
+4) ARCHITECTURAL INVARIANTS DOCUMENTATION
+- Add header-level invariants ONLY (no new system behavior)
+- Must explicitly document:
+  - 1:1 instance ↔ ProcessHandle
+  - single watcher per process
+  - wait() is one-time gate
+  - lifecycle authority flows ProcessHandle → UiState only
+  - AsyncLauncher is the only lifecycle mutator
+
+────────────────────────────────────
+HARD CONSTRAINTS
+────────────────────────────────────
+
+- NO new features
+- NO UI changes
+- NO new systems (no telemetry expansion, no monitoring redesign)
+- NO refactoring unrelated to the 4 issues
+- NO speculative "future-proofing"
+- Minimal diff principle applies
+
+────────────────────────────────────
+IMPLEMENTATION REQUIREMENTS
+────────────────────────────────────
+
+- All concurrency fixes must be lock-safe and race-tested logically
+- Prefer RAII over manual cleanup
+- Prefer atomic flags over state maps where applicable
+- Never rely on UI state as a synchronization primitive
+- Any process termination MUST be group-based (POSIX correctness required)
+- Watcher lifecycle MUST be deterministic (no leaks under repeated launch/stop cycles)
+
+────────────────────────────────────
+OUTPUT FORMAT
+────────────────────────────────────
+
+1. List each fix (1–4)
+2. Show exact file-level changes
+3. Explain concurrency safety reasoning briefly (no essays)
+4. Confirm no new behaviors were introduced
+5. Confirm watcher leak is impossible under repeated stress cycles
+
+────────────────────────────────────
+SUCCESS CRITERIA
+
+- 100 rapid start/stop cycles produce:
+  - zero orphan processes
+  - zero watcher accumulation
+  - zero duplicate stop workers
+- JVM subtree always fully terminates
+- No UiState desync under concurrency
