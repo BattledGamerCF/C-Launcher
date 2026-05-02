@@ -310,10 +310,23 @@ static void draw_new_instance_dialog(core::Launcher& launcher) {
             cfg.id           = std::string(g_state.new_instance_name);
             cfg.display_name = cfg.id;
             cfg.game_version = std::string(g_state.new_instance_version);
-            auto res = launcher.instance_manager().create(std::move(cfg));
+
+            const std::string ver = cfg.game_version;
+            const bool will_install_pack = mods::PerformancePack::qualifies(ver);
+
+            auto res = launcher.create_instance_with_performance_pack(
+                std::move(cfg),
+                [](const std::string& mod_name, float frac) {
+                    g_state.download_fraction = frac;
+                    g_state.download_label    = "Installing " + mod_name;
+                });
+
             if (res.is_err()) {
                 g_state.status_message  = "Create failed: " + res.error().full();
                 g_state.status_is_error = true;
+            } else if (will_install_pack) {
+                g_state.status_message  = "Instance created with Sodium + Lithium + Iris.";
+                g_state.status_is_error = false;
             } else {
                 g_state.status_message  = "Instance created.";
                 g_state.status_is_error = false;

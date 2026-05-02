@@ -149,6 +149,43 @@ Instances are fully portable — no absolute path references baked into saves.
 3. `apply_update()` — Backs up current binary, atomically replaces, cleans backup
 4. `rollback()` — Restores previous binary if update produces a broken executable
 
+## Automatic performance pack (1.21.11+)
+
+For every Minecraft version 1.21.11 and newer (the post-Microsoft naming
+scheme), Genesis automatically installs a curated Fabric mod pack into newly
+created instances:
+
+| Mod | Project | Required? |
+|-----|---------|-----------|
+| Sodium       | `sodium`        | yes |
+| Sodium Extra | `sodium-extra`  | optional |
+| Lithium      | `lithium`       | yes |
+| Iris Shaders | `iris`          | optional |
+
+How it works:
+
+1. `mods::PerformancePack::qualifies(version)` returns `true` for any version
+   `>= 1.21.11` (snapshots / RCs / pre-releases are excluded — they often
+   pre-date the matching mod release).
+2. `Launcher::create_instance_with_performance_pack()` calls
+   `InstanceManager::create()` and then, if eligible, fetches the latest
+   compatible Fabric build of each mod from the Modrinth API
+   (`/v2/project/<slug>/version?game_versions=[…]&loaders=["fabric"]`).
+3. The newest stable Fabric loader for that Minecraft version is resolved via
+   `https://meta.fabricmc.net/v2/versions/loader/<mc>` and recorded in the
+   install summary. The loader profile JSON is merged into the version meta at
+   launch time.
+4. Each mod is downloaded with SHA-1 verification and dropped into
+   `<instance>/mods/`. Installation is **idempotent** — re-running on an
+   existing instance just verifies the present files.
+5. If a non-required mod has no compatible release yet (typical right after a
+   Minecraft drop), it is silently skipped and noted in the
+   `PerformancePackResult::skipped` list rather than failing the install.
+
+Disabling: pass an instance through plain `InstanceManager::create()` instead
+of `Launcher::create_instance_with_performance_pack()` — the manager itself
+has no knowledge of the mod pack and never installs anything.
+
 ## Extending for mod loaders
 
 `RuntimeProfile` carries an optional `ModLoaderSpec`:

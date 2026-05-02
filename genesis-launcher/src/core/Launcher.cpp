@@ -50,6 +50,7 @@ Result<void> Launcher::initialize(const std::string& config_path) {
     jvm_orchestrator_ = std::make_unique<jvm::JvmOrchestrator>(root_dir_);
     instance_manager_ = std::make_unique<instance::InstanceManager>(inst_dir);
     updater_          = std::make_unique<update::Updater>("stable");
+    performance_pack_ = std::make_unique<mods::PerformancePack>();
 
     auto load_res = instance_manager_->load_all();
     if (load_res.is_err()) {
@@ -170,6 +171,46 @@ assets::AssetManager& Launcher::asset_manager() const { return *asset_manager_; 
 jvm::JvmOrchestrator& Launcher::jvm_orchestrator() const { return *jvm_orchestrator_; }
 instance::InstanceManager& Launcher::instance_manager() const { return *instance_manager_; }
 update::Updater& Launcher::updater() const { return *updater_; }
+mods::PerformancePack& Launcher::performance_pack() const { return *performance_pack_; }
+
+Result<instance::Instance>
+Launcher::create_instance_with_performance_pack(
+    instance::InstanceConfig   config,
+    mods::ModInstallProgressFn progress)
+{
+    const std::string version = config.game_version;
+    auto created = instance_manager_->create(std::move(config));
+    if (created.is_err()) return created;
+
+    if (!mods::PerformancePack::qualifies(version)) {
+        log->info("Instance created without performance pack (version "
+                  + version + " does not qualify)");
+        return created;
+    }
+
+    auto inst_opt = instance_manager_->find(created.value().id());
+    if (!inst_opt) {
+        return Result<instance::Instance>::err(Error::make(Error::Code::InstanceNotFound,
+            "Created instance vanished from registry"));
+    }
+
+    auto pack_res = performance_pack_->install_for(
+        inst_opt->get(), version, std::move(progress));
+    if (pack_res.is_err()) {
+        log->warn("Performance pack install failed: " + pack_res.error().full());
+        EventBus::global().publish(ErrorEvent{
+            "performance-pack",
+            "Could not install Sodium / Lithium / Iris: " + pack_res.error().full()});
+    } else {
+        auto& summary = pack_res.value();
+        std::string installed_list;
+        for (auto& s : summary.installed) installed_list += s + ", ";
+        log->info("Performance pack ready (Fabric " + summary.fabric_loader_version
+                  + "): " + installed_list);
+    }
+
+    return created;
+}
 
 void Launcher::on_state_change(StateObserver observer) {
     state_machine_->on_transition(std::move(observer));

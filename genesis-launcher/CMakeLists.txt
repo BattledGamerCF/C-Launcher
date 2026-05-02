@@ -35,6 +35,8 @@ set(GENESIS_SOURCES
     src/instance/InstanceManager.cpp
     src/instance/Instance.cpp
     src/update/Updater.cpp
+    src/mods/ModrinthClient.cpp
+    src/mods/PerformancePack.cpp
     src/logging/Logger.cpp
     src/platform/PlatformUtils.cpp
     src/ui/MainWindow.cpp

@@ -9,6 +9,7 @@
 #include "genesis/jvm/JvmOrchestrator.hpp"
 #include "genesis/instance/InstanceManager.hpp"
 #include "genesis/update/Updater.hpp"
+#include "genesis/mods/PerformancePack.hpp"
 #include "genesis/logging/Logger.hpp"
 
 #include <memory>
@@ -47,6 +48,14 @@ public:
     [[nodiscard]] jvm::JvmOrchestrator&   jvm_orchestrator() const;
     [[nodiscard]] instance::InstanceManager& instance_manager() const;
     [[nodiscard]] update::Updater&        updater()          const;
+    [[nodiscard]] mods::PerformancePack&  performance_pack() const;
+
+    // High-level helper: create an instance and (if eligible) auto-install the
+    // performance mod pack — Sodium, Sodium Extra, Lithium, Iris on Fabric.
+    // Eligible when mods::PerformancePack::qualifies(version) is true.
+    Result<instance::Instance> create_instance_with_performance_pack(
+        instance::InstanceConfig          config,
+        mods::ModInstallProgressFn        progress = {});
 
     void on_state_change(StateObserver observer);
 
@@ -62,6 +71,7 @@ private:
     std::unique_ptr<jvm::JvmOrchestrator>      jvm_orchestrator_;
     std::unique_ptr<instance::InstanceManager> instance_manager_;
     std::unique_ptr<update::Updater>           updater_;
+    std::unique_ptr<mods::PerformancePack>     performance_pack_;
 
     std::string root_dir_;
     bool        initialized_ = false;
