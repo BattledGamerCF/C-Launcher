@@ -1,0 +1,126 @@
+PROMPT (C++ Launcher – Critical Fix Only / No Refactors)
+
+You are working on the C++ launcher stability system.
+
+You are in a hardening-only phase.
+You are NOT allowed to redesign architecture or introduce new subsystems.
+
+You may ONLY:
+
+* fix race conditions
+* fix shutdown ordering bugs
+* remove unsafe dispatches
+* tighten lifecycle authority rules
+* eliminate undefined behavior paths
+
+You must NOT:
+
+* add new state machines
+* introduce new concepts (intent layers, new enums, new systems)
+* refactor unrelated components
+* “improve design”
+
+⸻
+
+CONTEXT FROM AUDIT
+
+Two real failures were identified:
+
+FAILURE #2 — Shutdown ordering bug (CRITICAL)
+
+Problem:
+
+* shutdown() joins tasks_ before watchers_
+* launch worker can still register_handle_ after shutdown begins
+* leads to:
+    * watcher missing
+    * handle orphaning
+    * std::terminate during thread destruction
+
+You must guarantee:
+
+No watcher or handle can be created after shutdown begins.
+
+⸻
+
+FAILURE #4 — Lifecycle authority violation (CRITICAL)
+
+Problems:
+
+* run_launch_worker publishes “Running” AFTER register_handle_
+* watcher can publish “Stopped” earlier
+* final state can be overwritten incorrectly (Running after death)
+
+Also:
+
+* “Stopping” is emitted outside ProcessHandle authority channel
+* duplicate terminal state dispatch exists (Zombie double publish)
+
+⸻
+
+REQUIRED FIXES
+
+FIX A — Shutdown ordering correctness (must be deterministic)
+
+Ensure:
+
+1. shutdown flag blocks ALL new launches BEFORE they spawn threads
+2. no worker can reach register_handle_ after shutdown starts
+3. ordering must guarantee:
+    * stop all handles FIRST
+    * THEN join tasks_
+    * THEN drain watchers_
+4. no std::terminate paths from thread destruction
+
+This must be proven by reasoning in code, not assumed.
+
+⸻
+
+FIX B — Single-source lifecycle authority (STRICT)
+
+Enforce:
+
+* ONLY ProcessHandle may publish lifecycle state
+* launch worker MUST NOT publish “Running”
+* watcher is the ONLY producer of terminal states (Stopped/Crashed/Zombie)
+* remove or gate any redundant state dispatches
+
+Specifically:
+
+* eliminate post-register “Running” dispatch OR convert it into a handle transition event
+* remove external “Stopping” publication (must not exist outside handle channel)
+* ensure Zombie is published exactly once per lifecycle
+
+⸻
+
+VALIDATION REQUIREMENTS (MANDATORY)
+
+After fixes, prove:
+
+1. No execution order exists where:
+    * Running is published after Stopped for same instance
+2. No shutdown sequence can:
+    * leave watcher threads unjoined OR detached
+    * leave active launch workers running
+3. Each instance produces:
+    * exactly one lifecycle authority stream
+    * exactly one terminal state emission
+
+⸻
+
+OUTPUT FORMAT
+
+* list of files changed
+* exact lines or logic changes
+* race condition explanation (brief, factual)
+* explicit invariant confirmation
+* no redesign commentary
+* no new abstractions
+
+⸻
+
+FINAL RULE
+
+This is not a redesign task.
+
+This is a correctness patch to enforce the invariants the system already claims to have.

@@ -87,17 +87,62 @@ void AsyncLauncher::poll() {
 }
 
 void AsyncLauncher::shutdown() {
+    // Strict ordering for shutdown correctness:
+    //   1. Set shutting_down_ atomically. After this point spawn() refuses
+    //      new ops and register_handle_() refuses new handles (under
+    //      handles_mu_), so the set of in-flight launch workers is
+    //      finite and bounded.
+    //   2. Terminate every currently-live handle. This unblocks watcher
+    //      wait() calls that are already running.
+    //   3. Drain tasks_. This joins every launch worker. Any worker that
+    //      raced past the spawn() check completes here — either it
+    //      succeeded register_handle_() before step 1 (handle is in the
+    //      map and was terminated in step 2), or it failed register and
+    //      cleaned up its own handle in-line. After this drain, no
+    //      thread can call register_handle_() ever again.
+    //   4. Re-terminate any handles that were registered in the narrow
+    //      window between steps 2 and the worker's register call. After
+    //      step 3, handles_ is fully populated and no new entries can
+    //      appear, so this sweep is final.
+    //   5. Drain watchers_. All watcher wait()s have returned (their
+    //      handles are terminated), all watchers will set done and exit;
+    //      we join every one. After step 5, no joinable thread remains.
+    //   6. Stop the process monitor.
     shutting_down_.store(true);
 
-    // Terminate every live handle so watcher threads can return.
+    // Step 2 — initial terminate sweep.
     {
         std::lock_guard<std::mutex> l(handles_mu_);
         for (auto& [id, h] : handles_) {
-            if (h && h->is_running()) {
-                (void)h->terminate();
-            }
+            if (h && h->is_running()) (void)h->terminate();
         }
     }
+
+    // Step 3 — drain tasks_ FIRST. This is the critical ordering fix:
+    // launch workers must complete (and finish pushing their watchers
+    // into watchers_, OR fail register_handle_() and self-clean) BEFORE
+    // we drain watchers_. Otherwise a mid-flight launch worker can push
+    // a Watcher whose thread is joinable but never joined → std::terminate
+    // when ~AsyncLauncher destroys watchers_.
+    std::vector<std::unique_ptr<Task>> task_drain;
+    {
+        std::lock_guard<std::mutex> l(mu_);
+        task_drain.swap(tasks_);
+    }
+    for (auto& t : task_drain) {
+        if (t->thread && t->thread->joinable()) t->thread->join();
+    }
+
+    // Step 4 — final terminate sweep for any handles that were
+    // registered by a worker between steps 2 and 3.
+    {
+        std::lock_guard<std::mutex> l(handles_mu_);
+        for (auto& [id, h] : handles_) {
+            if (h && h->is_running()) (void)h->terminate();
+        }
+    }
+
+    // Step 5 — drain watchers_. Now closed under "no new pushes possible".
     std::vector<std::unique_ptr<Watcher>> w_drain;
     {
         std::lock_guard<std::mutex> l(handles_mu_);
@@ -107,14 +152,6 @@ void AsyncLauncher::shutdown() {
         if (w && w->thread && w->thread->joinable()) w->thread->join();
     }
 
-    std::vector<std::unique_ptr<Task>> drain;
-    {
-        std::lock_guard<std::mutex> l(mu_);
-        drain.swap(tasks_);
-    }
-    for (auto& t : drain) {
-        if (t->thread && t->thread->joinable()) t->thread->join();
-    }
     monitor::ProcessMonitor::global().shutdown();
 }
 
@@ -131,10 +168,17 @@ bool AsyncLauncher::has_handle(const std::string& instance_id) const {
     return handles_.find(instance_id) != handles_.end();
 }
 
-void AsyncLauncher::register_handle_(std::string instance_id,
+bool AsyncLauncher::register_handle_(std::string instance_id,
                                      std::shared_ptr<jvm::ProcessHandle> h) {
     std::lock_guard<std::mutex> l(handles_mu_);
+    // Atomic gate: shutting_down is checked under the same lock that
+    // stores the handle, so shutdown()'s "drain tasks → terminate
+    // handles → drain watchers" ordering can rely on the fact that no
+    // new handle can appear once it has set shutting_down_ AND
+    // observed an empty in-flight task set.
+    if (shutting_down_.load()) return false;
     handles_[instance_id] = h;
+    return true;
 }
 
 void AsyncLauncher::unregister_handle_(const std::string& instance_id) {
@@ -259,9 +303,10 @@ void AsyncLauncher::run_launch_worker(std::string instance_id) {
     auto handle = std::move(res.value());
     const int64_t pid = handle->pid();
 
-    // Subscribe to OS-confirmed transitions BEFORE we publish state.
+    // Subscribe to OS-confirmed transitions BEFORE we register / publish.
     // The handle's transition channel is the single authoritative
-    // bridge into UiState — no other code path may set instance state.
+    // bridge into UiState — no other code path may set instance state
+    // after register_handle_() succeeds.
     handle->on_transition([instance_id, corr, pid](jvm::ProcessState prev,
                                                     jvm::ProcessState next,
                                                     int32_t exit_code) {
@@ -274,17 +319,35 @@ void AsyncLauncher::run_launch_worker(std::string instance_id) {
                 " (exit=" + std::to_string(exit_code) + ")");
     });
 
-    register_handle_(instance_id, handle);
+    // Atomic shutdown gate. If shutdown has begun, terminate the freshly
+    // spawned process and abandon — do NOT register, do NOT spawn a
+    // watcher. This is what guarantees shutdown's drain-tasks-then-
+    // drain-watchers ordering cannot leave an un-joined watcher behind.
+    if (!register_handle_(instance_id, handle)) {
+        log->warn("[corr=" + corr + "] Shutdown in progress; terminating "
+                  "freshly spawned pid=" + std::to_string(pid));
+        (void)handle->terminate();
+        (void)handle->wait();
+        ust::dispatch::fail_op("launch:" + instance_id,
+            ust::make_error("jvm", "JVM-SHUTDOWN",
+                "Launch aborted: shutdown in progress",
+                "pid=" + std::to_string(pid),
+                "Restart the launcher to retry."));
+        return;
+    }
 
-    // Publish authoritative running state and PID into UiState atomically.
+    // Side-channel UiState fields (PID, has_handle, op progress) — these
+    // are NOT lifecycle state, so they may be published directly.
     ust::dispatch::set_instance_pid(instance_id, pid);
     ust::dispatch::set_instance_has_handle(instance_id, true);
-    ust::dispatch::set_instance_state(instance_id, ust::InstanceRuntimeState::Running);
-    ust::dispatch::record_instance_lifecycle(
-        instance_id, ust::InstanceRuntimeState::Starting,
-        ust::InstanceRuntimeState::Running, pid, corr,
-        "spawned pid=" + std::to_string(pid));
     ust::dispatch::update_op("launch:" + instance_id, 0.95f, "Running");
+
+    // Lifecycle state (Running) is published EXCLUSIVELY through the
+    // transition channel. publish_current_state() fires the same
+    // callback that delivers later Stopped/Crashed/Detached events,
+    // so the dispatch queue receives Running strictly before any
+    // exit event the watcher might subsequently produce.
+    handle->publish_current_state();
 
     // Track via handle so the monitor can OS-verify liveness before
     // declaring detachment (defends against stub samplers, e.g. macOS).
@@ -369,10 +432,11 @@ void AsyncLauncher::run_stop_worker(std::string instance_id) {
     const std::string corr = ust::new_correlation_id();
     const int64_t pid = handle->pid();
 
-    ust::dispatch::set_instance_state(instance_id, ust::InstanceRuntimeState::Stopping);
-    ust::dispatch::record_instance_lifecycle(
-        instance_id, ust::InstanceRuntimeState::Running,
-        ust::InstanceRuntimeState::Stopping, pid, corr, "stop requested");
+    // No lifecycle dispatch here — "Stopping" is not a ProcessState and
+    // must not appear outside the handle's transition channel. The op
+    // progress (below) plus the inflight_stops_ claim is the UI's signal
+    // that a stop is in flight; the authoritative terminal state will
+    // arrive via the watcher's wait() → transition → on_transition path.
     ust::dispatch::update_op("stop:" + instance_id, 0.25f, "Sending SIGTERM");
 
     auto term_res = handle->terminate();
@@ -393,12 +457,11 @@ void AsyncLauncher::run_stop_worker(std::string instance_id) {
         if (kill_res.is_err()) {
             log->error("[corr=" + corr + "] kill() failed pid=" + std::to_string(pid) +
                        ": " + kill_res.error().full());
+            // mark_zombie publishes Zombie via the transition channel
+            // (which dispatches set_instance_state + record_lifecycle).
+            // No additional state dispatch — that would be a duplicate
+            // terminal-state emission, violating the single-authority rule.
             handle->mark_zombie("terminate+kill both failed");
-            ust::dispatch::set_instance_state(instance_id, ust::InstanceRuntimeState::Zombie);
-            ust::dispatch::record_instance_lifecycle(
-                instance_id, ust::InstanceRuntimeState::Stopping,
-                ust::InstanceRuntimeState::Zombie, pid, corr,
-                "terminate+kill failed: " + kill_res.error().message);
             ust::dispatch::fail_op("stop:" + instance_id,
                 ust::make_error("jvm", "JVM-ZOMBIE",
                     "Could not stop instance",

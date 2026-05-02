@@ -61,8 +61,13 @@ private:
     void run_export_logs_worker(std::string dest_path);
     void run_snapshot_worker(std::string dest_path);
 
-    void register_handle_(std::string instance_id,
-                          std::shared_ptr<jvm::ProcessHandle> h);
+    // Returns false (atomically, under handles_mu_) iff shutdown has
+    // begun. Caller MUST honor a false return by terminating the
+    // about-to-be-orphaned handle and abandoning the launch — this is
+    // the gate that guarantees no watcher/handle is created after
+    // shutdown begins.
+    [[nodiscard]] bool register_handle_(std::string instance_id,
+                                        std::shared_ptr<jvm::ProcessHandle> h);
     void unregister_handle_(const std::string& instance_id);
 
     core::Launcher&                       launcher_;

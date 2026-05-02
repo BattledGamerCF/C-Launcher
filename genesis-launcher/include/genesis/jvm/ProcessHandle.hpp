@@ -79,6 +79,14 @@ public:
     // fail; UI must surface this).
     void mark_zombie(const std::string& reason);
 
+    // Fire the on_transition callback once with the current state as
+    // both `prev` and `next` so subscribers can publish the initial
+    // post-spawn state through the same channel that delivers all
+    // later transitions. This keeps the handle as the SOLE writer of
+    // lifecycle state — callers must never dispatch state directly
+    // after register_handle_().
+    void publish_current_state();
+
 private:
     // Internal: record the new state, emit channel notification.
     void transition_to_(ProcessState next, int32_t exit_code);

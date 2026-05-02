@@ -237,4 +237,16 @@ void ProcessHandle::mark_zombie(const std::string& reason) {
     transition_to_(ProcessState::Zombie, -1);
 }
 
+void ProcessHandle::publish_current_state() {
+    TransitionFn fn;
+    {
+        std::lock_guard<std::mutex> l(mu_);
+        fn = on_transition_;
+    }
+    if (!fn) return;
+    ProcessState s = state_.load();
+    int32_t      e = exit_code_.load();
+    try { fn(s, s, e); } catch (...) { /* never propagate */ }
+}
+
 }
