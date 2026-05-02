@@ -87,33 +87,29 @@ Result<JvmConfig> JvmOrchestrator::build_config(
     return Result<JvmConfig>::ok(std::move(cfg));
 }
 
-Result<ProcessHandle> JvmOrchestrator::launch(
+Result<std::shared_ptr<ProcessHandle>> JvmOrchestrator::launch(
     const JvmConfig& config,
-    ProcessExitFn   on_exit,
-    ProcessOutputFn on_stdout,
-    ProcessOutputFn on_stderr)
+    const std::string& instance_id)
 {
     auto argv = config.build_argv();
-    log->info("Spawning JVM: " + config.java_executable);
+    log->info("Spawning JVM (non-blocking): " + config.java_executable +
+              " [instance=" + instance_id + "]");
 
-    auto res = platform::run_process(config.java_executable,
-                                     std::vector<std::string>(argv.begin() + 1, argv.end()),
-                                     config.game_dir);
+    auto res = platform::spawn_process(
+        config.java_executable,
+        std::vector<std::string>(argv.begin() + 1, argv.end()),
+        config.game_dir);
     if (res.is_err())
-        return Result<ProcessHandle>::err(Error::make(Error::Code::JvmLaunchFailed,
-                                                       "Process spawn failed", res.error().full()));
+        return Result<std::shared_ptr<ProcessHandle>>::err(
+            Error::make(Error::Code::JvmLaunchFailed,
+                        "Process spawn failed", res.error().full()));
 
-    if (on_stdout && !res.value().stdout_output.empty())
-        on_stdout(res.value().stdout_output);
-    if (on_stderr && !res.value().stderr_output.empty())
-        on_stderr(res.value().stderr_output);
-    if (on_exit)
-        on_exit(res.value().exit_code);
-
-    ProcessHandle handle;
-    handle.pid         = 0;
-    handle.instance_id = config.game_dir;
-    return Result<ProcessHandle>::ok(std::move(handle));
+    auto& sp = res.value();
+    auto handle = std::make_shared<ProcessHandle>();
+    handle->adopt(sp.pid, sp.os_handle, instance_id);
+    log->info("JVM spawned: pid=" + std::to_string(sp.pid) +
+              " instance=" + instance_id);
+    return Result<std::shared_ptr<ProcessHandle>>::ok(std::move(handle));
 }
 
 JvmProfile JvmOrchestrator::get_or_create_default() const {
@@ -152,10 +148,5 @@ std::optional<JvmProfile> JvmOrchestrator::default_profile() const {
     for (auto& p : profiles_) if (p.is_default) return p;
     return std::nullopt;
 }
-
-bool ProcessHandle::is_running() const { return false; }
-core::Result<void> ProcessHandle::wait(int) { return core::Result<void>::ok(); }
-core::Result<void> ProcessHandle::terminate() { return core::Result<void>::ok(); }
-core::Result<void> ProcessHandle::kill() { return core::Result<void>::ok(); }
 
 }

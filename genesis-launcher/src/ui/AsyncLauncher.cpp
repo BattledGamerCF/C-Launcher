@@ -16,8 +16,19 @@ namespace ust = genesis::ui::state;
 
 static auto log = logging::get_logger("AsyncLauncher");
 
-AsyncLauncher::AsyncLauncher(Launcher& l) : launcher_(l) {}
+// Map JVM ProcessState → UI runtime state.
+static ust::InstanceRuntimeState to_ui(jvm::ProcessState s) {
+    switch (s) {
+        case jvm::ProcessState::Running:  return ust::InstanceRuntimeState::Running;
+        case jvm::ProcessState::Stopped:  return ust::InstanceRuntimeState::Stopped;
+        case jvm::ProcessState::Crashed:  return ust::InstanceRuntimeState::Crashed;
+        case jvm::ProcessState::Detached: return ust::InstanceRuntimeState::Detached;
+        case jvm::ProcessState::Zombie:   return ust::InstanceRuntimeState::Zombie;
+    }
+    return ust::InstanceRuntimeState::Stopped;
+}
 
+AsyncLauncher::AsyncLauncher(Launcher& l) : launcher_(l) {}
 AsyncLauncher::~AsyncLauncher() { shutdown(); }
 
 void AsyncLauncher::spawn(std::string op_id,
@@ -64,6 +75,25 @@ void AsyncLauncher::poll() {
 
 void AsyncLauncher::shutdown() {
     shutting_down_.store(true);
+
+    // Terminate every live handle so watcher threads can return.
+    {
+        std::lock_guard<std::mutex> l(handles_mu_);
+        for (auto& [id, h] : handles_) {
+            if (h && h->is_running()) {
+                (void)h->terminate();
+            }
+        }
+    }
+    std::vector<std::unique_ptr<std::thread>> w_drain;
+    {
+        std::lock_guard<std::mutex> l(handles_mu_);
+        w_drain.swap(watchers_);
+    }
+    for (auto& t : w_drain) {
+        if (t && t->joinable()) t->join();
+    }
+
     std::vector<std::unique_ptr<Task>> drain;
     {
         std::lock_guard<std::mutex> l(mu_);
@@ -73,6 +103,30 @@ void AsyncLauncher::shutdown() {
         if (t->thread && t->thread->joinable()) t->thread->join();
     }
     monitor::ProcessMonitor::global().shutdown();
+}
+
+// ─── Handle registry (instance_id ↔ ProcessHandle, 1:1) ─────────────────────
+std::shared_ptr<jvm::ProcessHandle>
+AsyncLauncher::handle_for(const std::string& instance_id) const {
+    std::lock_guard<std::mutex> l(handles_mu_);
+    auto it = handles_.find(instance_id);
+    return it == handles_.end() ? nullptr : it->second;
+}
+
+bool AsyncLauncher::has_handle(const std::string& instance_id) const {
+    std::lock_guard<std::mutex> l(handles_mu_);
+    return handles_.find(instance_id) != handles_.end();
+}
+
+void AsyncLauncher::register_handle_(std::string instance_id,
+                                     std::shared_ptr<jvm::ProcessHandle> h) {
+    std::lock_guard<std::mutex> l(handles_mu_);
+    handles_[instance_id] = h;
+}
+
+void AsyncLauncher::unregister_handle_(const std::string& instance_id) {
+    std::lock_guard<std::mutex> l(handles_mu_);
+    handles_.erase(instance_id);
 }
 
 // ─── Login ───────────────────────────────────────────────────────────────────
@@ -136,14 +190,22 @@ void AsyncLauncher::start_logout() {
 
 // ─── Launch ──────────────────────────────────────────────────────────────────
 void AsyncLauncher::start_launch(std::string instance_id) {
+    if (has_handle(instance_id)) {
+        ust::dispatch::push_toast("Already running: " + instance_id, true);
+        return;
+    }
     spawn("launch:" + instance_id, "Launch " + instance_id,
           [this, instance_id]() { run_launch_worker(instance_id); });
 }
 
 void AsyncLauncher::run_launch_worker(std::string instance_id) {
-    log->info("Launch requested for " + instance_id);
+    const std::string corr = ust::new_correlation_id();
+    log->info("[corr=" + corr + "] Launch requested for " + instance_id);
 
     ust::dispatch::set_instance_state(instance_id, ust::InstanceRuntimeState::Syncing);
+    ust::dispatch::record_instance_lifecycle(
+        instance_id, ust::InstanceRuntimeState::Stopped,
+        ust::InstanceRuntimeState::Syncing, 0, corr, "launch requested");
     ust::dispatch::update_op("launch:" + instance_id, 0.05f, "Resolving instance");
 
     auto inst_opt = launcher_.instance_manager().find(instance_id);
@@ -159,6 +221,9 @@ void AsyncLauncher::run_launch_worker(std::string instance_id) {
 
     ust::dispatch::update_op("launch:" + instance_id, 0.20f, "Preparing launch");
     ust::dispatch::set_instance_state(instance_id, ust::InstanceRuntimeState::Starting);
+    ust::dispatch::record_instance_lifecycle(
+        instance_id, ust::InstanceRuntimeState::Syncing,
+        ust::InstanceRuntimeState::Starting, 0, corr, "preparing");
 
     LaunchRequest req;
     req.instance_id = instance_id;
@@ -172,27 +237,142 @@ void AsyncLauncher::run_launch_worker(std::string instance_id) {
             "Open the Logs tab to inspect the JVM stderr.");
         ust::dispatch::fail_op("launch:" + instance_id, err);
         ust::dispatch::set_instance_state(instance_id, ust::InstanceRuntimeState::Crashed);
+        ust::dispatch::record_instance_lifecycle(
+            instance_id, ust::InstanceRuntimeState::Starting,
+            ust::InstanceRuntimeState::Crashed, 0, corr, "spawn failed");
         return;
     }
 
-    auto& report = res.value();
-    ust::dispatch::set_instance_exit(instance_id, report.exit_code,
-        report.exit_code == 0 ? "" : "Exited with code " + std::to_string(report.exit_code));
-    ust::dispatch::complete_op("launch:" + instance_id);
+    auto handle = std::move(res.value());
+    const int64_t pid = handle->pid();
+
+    // Subscribe to OS-confirmed transitions BEFORE we publish state.
+    // The handle's transition channel is the single authoritative
+    // bridge into UiState — no other code path may set instance state.
+    handle->on_transition([instance_id, corr, pid](jvm::ProcessState prev,
+                                                    jvm::ProcessState next,
+                                                    int32_t exit_code) {
+        ust::dispatch::set_instance_state(instance_id, to_ui(next));
+        ust::dispatch::record_instance_lifecycle(
+            instance_id, to_ui(prev), to_ui(next),
+            pid, corr,
+            std::string("OS: ") + jvm::process_state_label(prev) + "→" +
+                jvm::process_state_label(next) +
+                " (exit=" + std::to_string(exit_code) + ")");
+    });
+
+    register_handle_(instance_id, handle);
+
+    // Publish authoritative running state and PID into UiState atomically.
+    ust::dispatch::set_instance_pid(instance_id, pid);
+    ust::dispatch::set_instance_has_handle(instance_id, true);
+    ust::dispatch::set_instance_state(instance_id, ust::InstanceRuntimeState::Running);
+    ust::dispatch::record_instance_lifecycle(
+        instance_id, ust::InstanceRuntimeState::Starting,
+        ust::InstanceRuntimeState::Running, pid, corr,
+        "spawned pid=" + std::to_string(pid));
+    ust::dispatch::update_op("launch:" + instance_id, 0.95f, "Running");
+
+    // Track via handle so the monitor can OS-verify liveness before
+    // declaring detachment (defends against stub samplers, e.g. macOS).
+    monitor::ProcessMonitor::global().track(instance_id, handle);
+
+    // Watcher thread: blocks on wait(), then publishes exit + cleans up.
+    auto watcher = std::make_unique<std::thread>(
+        [this, handle, instance_id, corr, pid]() {
+        auto wait_res = handle->wait();
+        int32_t exit_code = wait_res.is_ok() ? wait_res.value()
+                                              : handle->exit_code();
+        log->info("[corr=" + corr + "] Watcher exit pid=" + std::to_string(pid) +
+                  " code=" + std::to_string(exit_code));
+
+        monitor::ProcessMonitor::global().untrack(instance_id);
+
+        std::string crash_reason;
+        if (exit_code != 0) crash_reason = "Exited with code " + std::to_string(exit_code);
+        ust::dispatch::set_instance_exit(instance_id, exit_code, crash_reason);
+        ust::dispatch::set_instance_has_handle(instance_id, false);
+        ust::dispatch::complete_op("launch:" + instance_id);
+
+        unregister_handle_(instance_id);
+    });
+
+    {
+        std::lock_guard<std::mutex> l(handles_mu_);
+        watchers_.push_back(std::move(watcher));
+    }
 }
 
 // ─── Stop ────────────────────────────────────────────────────────────────────
 void AsyncLauncher::start_stop(std::string instance_id) {
-    spawn("stop:" + instance_id, "Stop " + instance_id,
-          [instance_id]() {
-        // The launcher's process is owned by the launch worker thread; signal
-        // intent here so the dashboard reflects it. Real terminate is a follow-up.
-        ust::dispatch::set_instance_state(instance_id, ust::InstanceRuntimeState::Stopping);
-        ust::dispatch::update_op("stop:" + instance_id, 0.5f, "Sending SIGTERM");
-        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    if (!has_handle(instance_id)) {
+        // No real process — treat Stop as Detach (clear UI placeholder).
         ust::dispatch::set_instance_state(instance_id, ust::InstanceRuntimeState::Stopped);
+        ust::dispatch::set_instance_has_handle(instance_id, false);
+        ust::dispatch::push_toast("No live process; cleared placeholder", false);
+        return;
+    }
+    spawn("stop:" + instance_id, "Stop " + instance_id,
+          [this, instance_id]() { run_stop_worker(instance_id); });
+}
+
+void AsyncLauncher::run_stop_worker(std::string instance_id) {
+    auto handle = handle_for(instance_id);
+    if (!handle) {
         ust::dispatch::complete_op("stop:" + instance_id);
-    });
+        return;
+    }
+    const std::string corr = ust::new_correlation_id();
+    const int64_t pid = handle->pid();
+
+    ust::dispatch::set_instance_state(instance_id, ust::InstanceRuntimeState::Stopping);
+    ust::dispatch::record_instance_lifecycle(
+        instance_id, ust::InstanceRuntimeState::Running,
+        ust::InstanceRuntimeState::Stopping, pid, corr, "stop requested");
+    ust::dispatch::update_op("stop:" + instance_id, 0.25f, "Sending SIGTERM");
+
+    auto term_res = handle->terminate();
+    if (term_res.is_err()) {
+        log->warn("[corr=" + corr + "] terminate() failed pid=" + std::to_string(pid) +
+                  ": " + term_res.error().full() + "; retrying with kill()");
+    }
+
+    // Give the JVM a brief grace window to exit cleanly.
+    for (int i = 0; i < 30; ++i) {
+        if (!handle->is_running()) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    if (handle->is_running()) {
+        ust::dispatch::update_op("stop:" + instance_id, 0.65f, "Force kill");
+        auto kill_res = handle->kill();
+        if (kill_res.is_err()) {
+            log->error("[corr=" + corr + "] kill() failed pid=" + std::to_string(pid) +
+                       ": " + kill_res.error().full());
+            handle->mark_zombie("terminate+kill both failed");
+            ust::dispatch::set_instance_state(instance_id, ust::InstanceRuntimeState::Zombie);
+            ust::dispatch::record_instance_lifecycle(
+                instance_id, ust::InstanceRuntimeState::Stopping,
+                ust::InstanceRuntimeState::Zombie, pid, corr,
+                "terminate+kill failed: " + kill_res.error().message);
+            ust::dispatch::fail_op("stop:" + instance_id,
+                ust::make_error("jvm", "JVM-ZOMBIE",
+                    "Could not stop instance",
+                    kill_res.error().full(),
+                    "Open Task Manager / 'kill -9' the PID manually."));
+            return;
+        }
+        // Wait briefly for kill to take effect.
+        for (int i = 0; i < 20; ++i) {
+            if (!handle->is_running()) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+    }
+
+    // Watcher thread will publish the actual exit + clean handle. We only
+    // confirm the operation here.
+    ust::dispatch::update_op("stop:" + instance_id, 1.0f, "Stopped");
+    ust::dispatch::complete_op("stop:" + instance_id);
 }
 
 // ─── Create instance ─────────────────────────────────────────────────────────
@@ -327,6 +507,8 @@ void AsyncLauncher::run_snapshot_worker(std::string dest_path) {
         oss << "    { \"id\": \"" << id
             << "\", \"state\": \"" << ust::runtime_label(live.state)
             << "\", \"pid\": " << live.pid
+            << ", \"has_handle\": " << (live.has_handle ? "true" : "false")
+            << ", \"last_heartbeat_us\": " << live.last_heartbeat_us
             << ", \"exit_code\": " << live.exit_code
             << ", \"samples\": " << live.ram_mb.size()
             << " }";

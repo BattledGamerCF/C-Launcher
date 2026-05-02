@@ -37,6 +37,8 @@ void badge_runtime(state::InstanceRuntimeState s) {
         case S::Running:  fg = theme::SUCCESS;  bg = theme::with_alpha(theme::SUCCESS,  0.20f); break;
         case S::Stopping: fg = theme::WARN;     bg = theme::with_alpha(theme::WARN,     0.20f); break;
         case S::Crashed:  fg = theme::ERR;      bg = theme::with_alpha(theme::ERR,      0.22f); break;
+        case S::Detached: fg = theme::WARN;     bg = theme::with_alpha(theme::WARN,     0.18f); break;
+        case S::Zombie:   fg = theme::ERR;      bg = theme::with_alpha(theme::ERR,      0.30f); break;
     }
     badge(state::runtime_label(s), fg, bg);
 }

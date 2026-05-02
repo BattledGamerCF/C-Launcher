@@ -31,6 +31,7 @@ set(GENESIS_SOURCES
     src/assets/Downloader.cpp
     src/assets/Verifier.cpp
     src/jvm/JvmOrchestrator.cpp
+    src/jvm/ProcessHandle.cpp
     src/jvm/JavaFinder.cpp
     src/instance/InstanceManager.cpp
     src/instance/Instance.cpp

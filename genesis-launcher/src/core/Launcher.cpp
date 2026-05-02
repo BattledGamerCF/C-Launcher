@@ -71,23 +71,24 @@ Result<void> Launcher::shutdown() {
     return Result<void>::ok();
 }
 
-Result<LaunchReport> Launcher::launch(LaunchRequest req) {
+Result<std::shared_ptr<jvm::ProcessHandle>> Launcher::launch(LaunchRequest req) {
+    using R = Result<std::shared_ptr<jvm::ProcessHandle>>;
     log->info("Launch requested: instance=" + req.instance_id + " version=" + req.version_id);
 
     auto cred_res = auth_manager_->ensure_valid_credential();
     if (cred_res.is_err()) {
         state_machine_->transition_to(LauncherState::Error);
-        return Result<LaunchReport>::err(cred_res.error());
+        return R::err(cred_res.error());
     }
     auto& cred = cred_res.value();
 
     if (!state_machine_->transition_to(LauncherState::ResolvingVersion))
-        return Result<LaunchReport>::err(Error::make(Error::Code::Unknown, "Cannot begin launch: bad state"));
+        return R::err(Error::make(Error::Code::Unknown, "Cannot begin launch: bad state"));
 
     auto meta_res = version_manager_->fetch_version_meta(req.version_id);
     if (meta_res.is_err()) {
         state_machine_->transition_to(LauncherState::Error);
-        return Result<LaunchReport>::err(meta_res.error());
+        return R::err(meta_res.error());
     }
     auto& meta = meta_res.value();
 
@@ -99,7 +100,7 @@ Result<LaunchReport> Launcher::launch(LaunchRequest req) {
     });
     if (asset_res.is_err()) {
         state_machine_->transition_to(LauncherState::Error);
-        return Result<LaunchReport>::err(asset_res.error());
+        return R::err(asset_res.error());
     }
 
     auto lib_res = asset_manager_->ensure_libraries(meta, [](const std::string& n, int64_t d, int64_t t) {
@@ -107,7 +108,7 @@ Result<LaunchReport> Launcher::launch(LaunchRequest req) {
     });
     if (lib_res.is_err()) {
         state_machine_->transition_to(LauncherState::Error);
-        return Result<LaunchReport>::err(lib_res.error());
+        return R::err(lib_res.error());
     }
 
     state_machine_->transition_to(LauncherState::PreparingLaunch);
@@ -115,8 +116,8 @@ Result<LaunchReport> Launcher::launch(LaunchRequest req) {
     auto inst_opt = instance_manager_->find(req.instance_id);
     if (!inst_opt) {
         state_machine_->transition_to(LauncherState::Error);
-        return Result<LaunchReport>::err(Error::make(Error::Code::InstanceNotFound,
-                                                      "Instance not found: " + req.instance_id));
+        return R::err(Error::make(Error::Code::InstanceNotFound,
+                                    "Instance not found: " + req.instance_id));
     }
     auto& inst = inst_opt->get();
 
@@ -127,41 +128,20 @@ Result<LaunchReport> Launcher::launch(LaunchRequest req) {
         cred.minecraft.access_token);
     if (jvm_res.is_err()) {
         state_machine_->transition_to(LauncherState::Error);
-        return Result<LaunchReport>::err(jvm_res.error());
+        return R::err(jvm_res.error());
     }
 
     state_machine_->transition_to(LauncherState::Launching);
 
-    auto launch_start = std::chrono::system_clock::now();
-    int32_t exit_code = -1;
-
-    auto proc_res = jvm_orchestrator_->launch(
-        jvm_res.value(),
-        [&](int32_t code) { exit_code = code; },
-        [](const std::string& line) { logging::get_logger("MC")->info(line); },
-        [](const std::string& line) { logging::get_logger("MC")->warn(line); });
-
+    auto proc_res = jvm_orchestrator_->launch(jvm_res.value(), req.instance_id);
     if (proc_res.is_err()) {
         state_machine_->transition_to(LauncherState::Error);
-        return Result<LaunchReport>::err(proc_res.error());
+        return R::err(proc_res.error());
     }
 
+    // Process is alive; wait/terminate is now the caller's responsibility.
     state_machine_->transition_to(LauncherState::Running);
-    proc_res.value().wait();
-    state_machine_->transition_to(LauncherState::Stopping);
-
-    auto launch_end = std::chrono::system_clock::now();
-    auto play_secs  = std::chrono::duration_cast<std::chrono::seconds>(launch_end - launch_start).count();
-    inst.record_play_session(static_cast<uint64_t>(play_secs));
-
-    state_machine_->transition_to(LauncherState::Idle);
-
-    return Result<LaunchReport>::ok(LaunchReport{
-        exit_code,
-        req.instance_id,
-        req.version_id,
-        static_cast<uint64_t>(play_secs)
-    });
+    return R::ok(std::move(proc_res.value()));
 }
 
 LauncherState Launcher::state() const { return state_machine_->current(); }

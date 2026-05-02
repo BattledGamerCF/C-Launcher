@@ -39,7 +39,11 @@ public:
     Result<void> initialize(const std::string& config_path);
     Result<void> shutdown();
 
-    Result<LaunchReport>  launch(LaunchRequest req);
+    // Non-blocking. Resolves the version, downloads assets/libs, builds the
+    // JVM config, and spawns the JVM process. Returns a shared
+    // ProcessHandle owning the live OS process. Caller must wait/terminate
+    // through the handle; this function NEVER blocks on the JVM exit.
+    Result<std::shared_ptr<jvm::ProcessHandle>> launch(LaunchRequest req);
 
     [[nodiscard]] LauncherState           state()            const;
     [[nodiscard]] auth::AuthManager&      auth_manager()     const;

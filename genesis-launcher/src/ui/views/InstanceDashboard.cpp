@@ -54,6 +54,23 @@ static void draw_instance_card(genesis::core::Launcher& launcher,
     uint32_t mm = static_cast<uint32_t>((secs % 3600) / 60);
     widgets::faint_text("Played: %uh %02um", hh, mm);
 
+    // Process identity + heartbeat (truth from ProcessHandle, surfaced
+    // through UiState by the AsyncLauncher watcher and ProcessMonitor).
+    if (it != s.instances.end() && it->second.pid > 0) {
+        const auto& live = it->second;
+        const char* hb_label = "no heartbeat";
+        char hb_buf[64];
+        if (live.last_heartbeat_us > 0) {
+            int64_t age_ms = (ust::now_us() - live.last_heartbeat_us) / 1000;
+            std::snprintf(hb_buf, sizeof(hb_buf), "heartbeat %lldms ago",
+                          (long long)age_ms);
+            hb_label = hb_buf;
+        }
+        widgets::faint_text("PID %lld • %s%s",
+                            (long long)live.pid, hb_label,
+                            live.has_handle ? "" : " • no handle");
+    }
+
     // Sparklines
     if (it != s.instances.end() && !it->second.ram_mb.empty()) {
         ImGui::Spacing();
@@ -76,11 +93,13 @@ static void draw_instance_card(genesis::core::Launcher& launcher,
         widgets::faint_text("  (no live samples)");
     }
 
-    // Action row
+    // Action row — buttons are derived strictly from ProcessHandle ownership.
     ImGui::Spacing();
-    bool can_launch = s.auth.authenticated &&
+    bool has_handle = (it != s.instances.end()) && it->second.has_handle;
+    bool can_launch = s.auth.authenticated && !has_handle &&
         (runtime == ust::InstanceRuntimeState::Stopped ||
-         runtime == ust::InstanceRuntimeState::Crashed);
+         runtime == ust::InstanceRuntimeState::Crashed ||
+         runtime == ust::InstanceRuntimeState::Detached);
     auto op_it = s.ops.find("launch:" + cfg.id);
     bool launching = (op_it != s.ops.end() &&
                       op_it->second.status == ust::AsyncStatus::Pending);
@@ -91,10 +110,14 @@ static void draw_instance_card(genesis::core::Launcher& launcher,
     if (!can_launch || launching) ImGui::EndDisabled();
 
     ImGui::SameLine();
-    bool can_stop = (runtime == ust::InstanceRuntimeState::Running ||
-                     runtime == ust::InstanceRuntimeState::Starting);
+    // Stop is enabled only if a real OS handle exists; without one we
+    // expose "Detach" instead (clears the placeholder UI state).
+    const char* stop_label = has_handle ? "Stop" : "Detach";
+    bool can_stop = has_handle ||
+        runtime == ust::InstanceRuntimeState::Detached ||
+        runtime == ust::InstanceRuntimeState::Zombie;
     if (!can_stop) ImGui::BeginDisabled();
-    if (ImGui::Button("Stop", {60, 28})) shell::async_launcher().start_stop(cfg.id);
+    if (ImGui::Button(stop_label, {64, 28})) shell::async_launcher().start_stop(cfg.id);
     if (!can_stop) ImGui::EndDisabled();
 
     ImGui::SameLine();

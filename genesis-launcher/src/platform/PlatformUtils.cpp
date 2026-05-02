@@ -12,9 +12,15 @@
 #   include <mach-o/dyld.h>
 #   include <sys/sysctl.h>
 #   include <unistd.h>
+#   include <sys/wait.h>
+#   include <signal.h>
+#   include <errno.h>
 #elif defined(GENESIS_PLATFORM_LINUX)
 #   include <unistd.h>
 #   include <sys/sysinfo.h>
+#   include <sys/wait.h>
+#   include <signal.h>
+#   include <errno.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -274,6 +280,60 @@ Result<ProcessResult> run_process(const std::string& exe,
     waitpid(pid, &status, 0);
     int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     return Result<ProcessResult>::ok(ProcessResult{exit_code, {}, {}});
+#endif
+}
+
+// ─── Non-blocking spawn ──────────────────────────────────────────────────────
+Result<SpawnedProcess> spawn_process(const std::string& exe,
+                                      const std::vector<std::string>& args,
+                                      const std::string& working_dir)
+{
+#ifdef GENESIS_PLATFORM_WINDOWS
+    std::string cmd = "\"" + exe + "\"";
+    for (auto& a : args) cmd += " \"" + a + "\"";
+
+    STARTUPINFOA si{}; si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+
+    if (!CreateProcessA(nullptr, const_cast<char*>(cmd.c_str()),
+                        nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW, nullptr,
+                        working_dir.empty() ? nullptr : working_dir.c_str(),
+                        &si, &pi))
+    {
+        return Result<SpawnedProcess>::err(Error::make(Error::Code::ProcessError,
+            "CreateProcess failed for: " + exe,
+            std::to_string(::GetLastError())));
+    }
+
+    CloseHandle(pi.hThread);
+    SpawnedProcess sp;
+    sp.pid       = static_cast<int64_t>(pi.dwProcessId);
+    sp.os_handle = reinterpret_cast<void*>(pi.hProcess);
+    return Result<SpawnedProcess>::ok(sp);
+
+#else
+    pid_t pid = fork();
+    if (pid == -1)
+        return Result<SpawnedProcess>::err(Error::make(Error::Code::ProcessError,
+            "fork() failed", std::to_string(errno)));
+
+    if (pid == 0) {
+        if (!working_dir.empty()) (void)!chdir(working_dir.c_str());
+        std::vector<char*> argv;
+        std::string exe_copy = exe;
+        argv.push_back(exe_copy.data());
+        std::vector<std::string> args_copy = args;
+        for (auto& a : args_copy) argv.push_back(a.data());
+        argv.push_back(nullptr);
+        execvp(exe.c_str(), argv.data());
+        _exit(127);
+    }
+
+    SpawnedProcess sp;
+    sp.pid       = static_cast<int64_t>(pid);
+    sp.os_handle = nullptr;
+    return Result<SpawnedProcess>::ok(sp);
 #endif
 }
 

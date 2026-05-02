@@ -51,6 +51,8 @@ const char* runtime_label(InstanceRuntimeState s) {
         case InstanceRuntimeState::Running:  return "running";
         case InstanceRuntimeState::Stopping: return "stopping";
         case InstanceRuntimeState::Crashed:  return "crashed";
+        case InstanceRuntimeState::Detached: return "detached";
+        case InstanceRuntimeState::Zombie:   return "zombie";
     }
     return "?";
 }
@@ -208,6 +210,44 @@ void set_instance_pid(std::string id, int64_t pid) {
         auto& live = s.instances[id];
         live.instance_id = id;
         live.pid         = pid;
+    });
+}
+
+void set_instance_has_handle(std::string id, bool yes) {
+    REDUCER({
+        auto& live = s.instances[id];
+        live.instance_id = id;
+        live.has_handle  = yes;
+    });
+}
+
+void set_instance_heartbeat(std::string id, int64_t ts_us) {
+    REDUCER({
+        auto& live = s.instances[id];
+        live.instance_id       = id;
+        live.last_heartbeat_us = ts_us;
+    });
+}
+
+void record_instance_lifecycle(std::string id,
+                               InstanceRuntimeState prev,
+                               InstanceRuntimeState next,
+                               int64_t pid,
+                               std::string correlation_id,
+                               std::string note) {
+    REDUCER({
+        auto& live = s.instances[id];
+        live.instance_id = id;
+        LifecycleEvent ev;
+        ev.timestamp_us   = now_us();
+        ev.pid            = pid;
+        ev.prev_state     = prev;
+        ev.new_state      = next;
+        ev.correlation_id = correlation_id;
+        ev.note           = note;
+        live.lifecycle.push_back(std::move(ev));
+        if (live.lifecycle.size() > InstanceLiveState::MAX_LIFECYCLE)
+            live.lifecycle.pop_front();
     });
 }
 

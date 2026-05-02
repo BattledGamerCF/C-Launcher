@@ -57,8 +57,21 @@ enum class InstanceRuntimeState {
     Running,
     Stopping,
     Crashed,
+    Detached,   // process handle was lost or never observed an exit
+    Zombie,     // terminate + kill both failed; needs manual cleanup
 };
 const char* runtime_label(InstanceRuntimeState s);
+
+// Audit entry emitted on every authoritative lifecycle transition.
+// Sourced from jvm::ProcessHandle, never from UI guesswork.
+struct LifecycleEvent {
+    int64_t              timestamp_us = 0;
+    int64_t              pid          = 0;
+    InstanceRuntimeState prev_state   = InstanceRuntimeState::Stopped;
+    InstanceRuntimeState new_state    = InstanceRuntimeState::Stopped;
+    std::string          correlation_id;
+    std::string          note;
+};
 
 struct InstanceLiveState {
     std::string          instance_id;
@@ -66,13 +79,19 @@ struct InstanceLiveState {
     int64_t              pid = 0;
     int64_t              started_us = 0;
     int64_t              ended_us   = 0;
+    int64_t              last_heartbeat_us = 0;   // last valid OS sample
     int32_t              exit_code  = 0;
     std::string          crash_reason;
+    bool                 has_handle = false;      // true ⇔ AsyncLauncher owns a live ProcessHandle for this id
 
     // Rolling samples — capped at MAX_SAMPLES
     std::vector<float>   ram_mb;
     std::vector<float>   cpu_pct;
     static constexpr size_t MAX_SAMPLES = 120;
+
+    // Bounded lifecycle log — newest at back
+    std::deque<LifecycleEvent> lifecycle;
+    static constexpr size_t MAX_LIFECYCLE = 32;
 };
 
 // ─── Per-instance modpack state ──────────────────────────────────────────────
@@ -174,8 +193,16 @@ void fail_op(std::string id, ErrorRecord err);
 
 void set_instance_state(std::string id, InstanceRuntimeState s);
 void set_instance_pid(std::string id, int64_t pid);
+void set_instance_has_handle(std::string id, bool yes);
 void push_instance_sample(std::string id, float ram_mb, float cpu_pct);
+void set_instance_heartbeat(std::string id, int64_t ts_us);
 void set_instance_exit(std::string id, int32_t exit_code, std::string crash_reason);
+void record_instance_lifecycle(std::string id,
+                               InstanceRuntimeState prev,
+                               InstanceRuntimeState next,
+                               int64_t pid,
+                               std::string correlation_id,
+                               std::string note);
 void clear_instance_state(std::string id);
 
 void set_modpack(std::string id, ModpackState ms);

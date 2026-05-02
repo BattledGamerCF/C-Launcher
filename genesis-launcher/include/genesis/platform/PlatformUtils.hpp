@@ -53,6 +53,19 @@ core::Result<ProcessResult> run_process(const std::string&              executab
                                          const std::string&              working_dir = {},
                                          int                             timeout_ms  = 30000);
 
+// Non-blocking spawn. Returns immediately with the child PID and an
+// opaque OS handle (Windows: HANDLE; POSIX: nullptr). Callers are
+// responsible for adopting the handle into a jvm::ProcessHandle which
+// owns the lifecycle (wait/terminate/kill).
+struct SpawnedProcess {
+    int64_t pid       = 0;
+    void*   os_handle = nullptr;   // Windows HANDLE; nullptr on POSIX
+};
+
+core::Result<SpawnedProcess> spawn_process(const std::string&              executable,
+                                            const std::vector<std::string>& args,
+                                            const std::string&              working_dir = {});
+
 void open_url_in_browser(const std::string& url);
 void open_in_file_manager(const std::string& path);
 void copy_to_clipboard(const std::string& text);

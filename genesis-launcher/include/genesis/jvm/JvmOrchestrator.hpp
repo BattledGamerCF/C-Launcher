@@ -3,27 +3,16 @@
 #include "genesis/core/Result.hpp"
 #include "genesis/jvm/JvmConfig.hpp"
 #include "genesis/jvm/JavaFinder.hpp"
+#include "genesis/jvm/ProcessHandle.hpp"
 #include "genesis/version/VersionManifest.hpp"
 #include <string>
 #include <vector>
 #include <functional>
+#include <memory>
 #include <cstdint>
 #include <optional>
 
 namespace genesis::jvm {
-
-using ProcessExitFn = std::function<void(int32_t exit_code)>;
-using ProcessOutputFn = std::function<void(const std::string& line)>;
-
-struct ProcessHandle {
-    int64_t     pid;
-    std::string instance_id;
-
-    [[nodiscard]] bool is_running() const;
-    core::Result<void> wait(int timeout_ms = -1);
-    core::Result<void> terminate();
-    core::Result<void> kill();
-};
 
 class JvmOrchestrator {
 public:
@@ -37,11 +26,13 @@ public:
         const std::string&          access_token,
         const std::optional<JvmProfile>& profile_override = {});
 
-    core::Result<ProcessHandle> launch(
+    // Non-blocking spawn. The returned ProcessHandle is the authoritative
+    // owner of the JVM process: the caller must hold it for the lifetime
+    // of the process and use its terminate/kill/wait APIs to control it.
+    // Returns immediately with handle.state() == Running and a valid PID.
+    core::Result<std::shared_ptr<ProcessHandle>> launch(
         const JvmConfig&   config,
-        ProcessExitFn      on_exit   = {},
-        ProcessOutputFn    on_stdout = {},
-        ProcessOutputFn    on_stderr = {});
+        const std::string& instance_id);
 
     core::Result<void>    save_profile(const JvmProfile& profile);
     core::Result<void>    delete_profile(const std::string& profile_id);

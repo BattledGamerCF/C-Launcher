@@ -1,5 +1,6 @@
 #include "genesis/ui/ProcessMonitor.hpp"
 #include "genesis/ui/UiState.hpp"
+#include "genesis/jvm/ProcessHandle.hpp"
 #include <chrono>
 #include <fstream>
 #include <sstream>
@@ -146,12 +147,36 @@ ProcessMonitor& ProcessMonitor::global() {
 void ProcessMonitor::track(const std::string& instance_id, int64_t pid) {
     std::lock_guard<std::mutex> l(mu_);
     for (auto& t : tracked_) {
-        if (t.instance_id == instance_id) { t.pid = pid; return; }
+        if (t.instance_id == instance_id) {
+            t.pid = pid;
+            t.handle.reset();
+            t.miss_count = 0;
+            return;
+        }
     }
     Tracked t;
     t.instance_id = instance_id;
     t.pid         = pid;
-    tracked_.push_back(t);
+    tracked_.push_back(std::move(t));
+}
+
+void ProcessMonitor::track(const std::string& instance_id,
+                           std::shared_ptr<jvm::ProcessHandle> handle) {
+    std::lock_guard<std::mutex> l(mu_);
+    int64_t pid = handle ? handle->pid() : 0;
+    for (auto& t : tracked_) {
+        if (t.instance_id == instance_id) {
+            t.pid        = pid;
+            t.handle     = std::move(handle);
+            t.miss_count = 0;
+            return;
+        }
+    }
+    Tracked t;
+    t.instance_id = instance_id;
+    t.pid         = pid;
+    t.handle      = std::move(handle);
+    tracked_.push_back(std::move(t));
 }
 
 void ProcessMonitor::untrack(const std::string& instance_id) {
@@ -173,7 +198,47 @@ void ProcessMonitor::poll() {
     }
     for (auto& tr : snap) {
         ProcessSample s = sample_process(tr.pid);
-        if (!s.valid) continue;
+        if (!s.valid) {
+            // Telemetry sampling failed — but that does NOT prove the
+            // process is gone (e.g. the macOS sampler is a stub). Consult
+            // the authoritative ProcessHandle for OS-level liveness;
+            // only declare detached when the OS confirms the PID is
+            // dead AND we've missed several consecutive ticks.
+            int misses = 0;
+            {
+                std::lock_guard<std::mutex> l(mu_);
+                for (auto& real : tracked_) {
+                    if (real.instance_id == tr.instance_id) {
+                        misses = ++real.miss_count;
+                        break;
+                    }
+                }
+            }
+            bool os_confirms_dead = false;
+            if (tr.handle) {
+                os_confirms_dead = !tr.handle->is_running();
+            }
+            if (misses >= 3 && os_confirms_dead) {
+                // Drive UiState through the handle's transition channel,
+                // never directly. AsyncLauncher subscribes to it and
+                // mirrors the new state into UiState.
+                if (tr.handle)
+                    tr.handle->mark_detached(
+                        "monitor: OS confirms PID gone after 3 ticks");
+            }
+            continue;
+        }
+        // Reset miss counter on successful sample, publish heartbeat.
+        {
+            std::lock_guard<std::mutex> l(mu_);
+            for (auto& real : tracked_) {
+                if (real.instance_id == tr.instance_id) {
+                    real.miss_count = 0;
+                    break;
+                }
+            }
+        }
+        state::dispatch::set_instance_heartbeat(tr.instance_id, s.timestamp_us);
         // Compute CPU% from delta of stored cpu_us total vs prior sample.
         float cpu_pct = 0.0f;
         if (tr.last_sample_us > 0) {

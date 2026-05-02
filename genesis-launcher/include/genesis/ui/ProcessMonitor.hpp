@@ -3,7 +3,10 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <memory>
 #include <cstdint>
+
+namespace genesis::jvm { class ProcessHandle; }
 
 namespace genesis::ui::monitor {
 
@@ -26,6 +29,13 @@ public:
     // Begin tracking pid, associated with the given instance id.
     void track(const std::string& instance_id, int64_t pid);
 
+    // Preferred: track an instance through its authoritative ProcessHandle
+    // so the monitor can consult OS-level liveness (handle->is_running)
+    // before declaring detachment. The handle remains owned by the caller
+    // (AsyncLauncher).
+    void track(const std::string& instance_id,
+               std::shared_ptr<jvm::ProcessHandle> handle);
+
     // Stop tracking the given instance.
     void untrack(const std::string& instance_id);
 
@@ -39,9 +49,11 @@ private:
     struct Tracked {
         std::string instance_id;
         int64_t     pid;
+        std::shared_ptr<jvm::ProcessHandle> handle;   // optional, preferred path
         int64_t     last_cpu_us       = 0;   // platform-dependent jiffy/ticks
         int64_t     last_total_us     = 0;
         int64_t     last_sample_us    = 0;
+        int         miss_count        = 0;   // consecutive invalid samples
     };
 
     std::mutex            mu_;

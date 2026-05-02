@@ -1,0 +1,170 @@
+C++ Minecraft Launcher (Genesis) — Process Ownership + Lifecycle Correctness Patch
+
+Context:
+The UI shell overhaul is complete:
+- 4-region state-driven shell is fully implemented (header, nav rail, workspace, inspector, console)
+- AsyncLauncher executes operations on worker threads
+- ProcessMonitor streams CPU/RAM telemetry
+- Logger is wired into in-memory ring buffer
+- UiState reducer + dispatch system is stable
+- Logging, diagnostics, and instance views are complete
+
+However, a critical architectural gap exists:
+
+CURRENT PROBLEM:
+The launcher UI assumes process control authority, but the JVM process lifecycle is not actually owned in a controllable way.
+
+Symptoms:
+- "Launch" is blocking or does not return a process identity
+- "Stop" is a UI state change, not a real OS process termination
+- ProcessMonitor observes runtime metrics without guaranteed process binding
+- Instances in UiState are not guaranteed to map 1:1 to real OS processes
+
+This creates a control-plane mismatch: UI suggests lifecycle authority, but backend process ownership is incomplete.
+
+──────────────────────────────────────────────
+REQUIRED FIX: PROCESS OWNERSHIP LAYER
+──────────────────────────────────────────────
+
+Introduce a strict process ownership contract between launcher and JVM.
+
+──────────────────────────────────────────────
+1. INTRODUCE PROCESS HANDLE MODEL
+──────────────────────────────────────────────
+
+Add a platform-agnostic ProcessHandle abstraction:
+
+Required fields:
+- process_id (PID or OS handle)
+- instance_id (launcher-level UUID)
+- launch_timestamp
+- state (Running | Stopped | Crashed | Detached)
+- exit_code (optional)
+- termination_channel (for async updates)
+
+Every launched Minecraft instance MUST return a ProcessHandle immediately.
+
+No blocking launch calls are allowed to return void or opaque results.
+
+──────────────────────────────────────────────
+2. MAKE AsyncLauncher OWN PROCESS LIFECYCLE CONTRACT
+
+Refactor AsyncLauncher so that:
+
+launch():
+- spawns JVM process asynchronously
+- returns ProcessHandle immediately
+- attaches internal watcher thread for lifecycle updates
+- emits state transitions (running → stopped/crashed)
+
+stop(handle):
+- performs actual OS-level termination using PID/handle
+- updates ProcessHandle state deterministically
+- guarantees UI state sync only after OS confirmation
+
+Rules:
+- UI state must never be the source of truth for lifecycle
+- OS process state is authoritative
+
+──────────────────────────────────────────────
+3. BIND UiState TO PROCESS HANDLE (1:1 INVARIANT)
+
+Enforce invariant:
+
+UiState.instance_id ↔ ProcessHandle.instance_id
+
+Rules:
+- Every UI instance MUST reference a valid ProcessHandle OR explicitly be:
+  state = Detached (UI-only placeholder)
+
+- UI must not allow "Running" state without an active ProcessHandle
+
+- Stop button must be disabled or converted to "Detach" if no handle exists
+
+──────────────────────────────────────────────
+4. COUPLE PROCESSMONITOR TO REAL HANDLE
+
+Modify ProcessMonitor:
+
+- Accept ProcessHandle instead of implicit discovery
+- Sample only known PID / OS handle
+- Detect invalid handle (process exit) and emit state transition
+- Stop sampling immediately on process termination
+
+──────────────────────────────────────────────
+5. UPDATE LAUNCH FLOW CONTRACT
+
+Launch pipeline must become:
+
+AsyncLauncher::launch(instance_config) → returns ProcessHandle
+
+Internal sequence:
+1. spawn JVM process
+2. capture PID immediately
+3. register ProcessHandle in UiState
+4. attach monitor loop
+5. emit Running state asynchronously
+
+No UI updates may occur before ProcessHandle exists.
+
+──────────────────────────────────────────────
+6. FAILURE MODES (MANDATORY HANDLING)
+
+Define deterministic behavior:
+
+- JVM spawn fails → ProcessHandle.state = Crashed
+- PID invalid → mark Detached + log structured error
+- Stop fails → retry once, then mark Zombie (requires manual cleanup UI state)
+- Monitor disconnect → emit warning but do not assume process is gone
+
+──────────────────────────────────────────────
+7. UI IMPLICATION CHANGES
+
+Update UI behavior:
+
+- Stop button = true OS termination trigger
+- Launch button disabled if instance already has Running ProcessHandle
+- Instance cards show:
+  - PID
+  - lifecycle state
+  - last heartbeat timestamp
+
+- Detached instances must be visually distinct
+
+──────────────────────────────────────────────
+8. OBSERVABILITY REQUIREMENT
+
+Every ProcessHandle transition must emit:
+
+- request/correlation id
+- instance_id
+- previous_state → new_state
+- PID (if available)
+- timestamp
+
+This must flow into existing LogStream ring buffer.
+
+──────────────────────────────────────────────
+SUCCESS CRITERIA
+
+System is correct when:
+
+- Every running Minecraft instance has a real OS process handle
+- UI state cannot drift from actual process state
+- Stop always maps to OS termination (not UI toggle)
+- ProcessMonitor cannot observe "phantom instances"
+- Crash detection produces deterministic state transitions
+- No lifecycle action is possible without a ProcessHandle
+
+──────────────────────────────────────────────
+CONSTRAINTS
+
+- Do NOT redesign UI shell
+- Do NOT remove AsyncLauncher abstraction
+- Do NOT introduce global process registry outside UiState + ProcessHandle mapping
+- Keep cross-platform compatibility (macOS / Windows / Linux)
+- Avoid blocking UI thread under all conditions
+
+──────────────────────────────────────────────
+END SPEC
+──────────────────────────────────────────────

@@ -2,27 +2,29 @@
 
 #include "genesis/core/Result.hpp"
 #include "genesis/instance/Instance.hpp"
+#include "genesis/jvm/ProcessHandle.hpp"
 #include <string>
 #include <thread>
 #include <atomic>
 #include <mutex>
 #include <vector>
+#include <unordered_map>
 #include <memory>
 
 namespace genesis::core { class Launcher; }
 
 namespace genesis::ui::async_ops {
 
-// AsyncLauncher wraps Launcher's blocking calls in worker threads, and
-// reports state through ui::state::dispatch::*. It satisfies the spec
-// requirement that the UI never blocks: callers fire-and-forget; results
-// land back in the central UI state.
+// AsyncLauncher wraps Launcher's blocking calls in worker threads, owns
+// the live jvm::ProcessHandle for every running instance, and reports
+// state through ui::state::dispatch::*. The UI never blocks: callers
+// fire-and-forget; results land in central UI state. Lifecycle truth
+// flows handle → UiState only.
 class AsyncLauncher {
 public:
     explicit AsyncLauncher(core::Launcher& launcher);
     ~AsyncLauncher();
 
-    // High-level user actions
     void start_login();
     void start_logout();
     void start_launch(std::string instance_id);
@@ -33,10 +35,12 @@ public:
     void start_export_logs(std::string dest_path);
     void start_take_snapshot(std::string dest_path);
 
-    // Called once per frame on the main thread to reap finished workers.
-    void poll();
+    // Handle introspection (read-only).
+    [[nodiscard]] std::shared_ptr<jvm::ProcessHandle>
+        handle_for(const std::string& instance_id) const;
+    [[nodiscard]] bool has_handle(const std::string& instance_id) const;
 
-    // Cancel & join all outstanding workers (used at shutdown).
+    void poll();
     void shutdown();
 
 private:
@@ -49,16 +53,28 @@ private:
     void spawn(std::string op_id, std::string label, std::function<void()> body);
     void run_login_worker();
     void run_launch_worker(std::string instance_id);
+    void run_stop_worker(std::string instance_id);
     void run_create_worker(instance::InstanceConfig cfg);
     void run_install_modpack_worker(std::string instance_id);
     void run_check_update_worker();
     void run_export_logs_worker(std::string dest_path);
     void run_snapshot_worker(std::string dest_path);
 
+    void register_handle_(std::string instance_id,
+                          std::shared_ptr<jvm::ProcessHandle> h);
+    void unregister_handle_(const std::string& instance_id);
+
     core::Launcher&                       launcher_;
     std::mutex                            mu_;
     std::vector<std::unique_ptr<Task>>    tasks_;
     std::atomic<bool>                     shutting_down_{false};
+
+    // Per-instance OS-level handle ownership. 1:1 with UiState.instances.
+    mutable std::mutex                                                       handles_mu_;
+    std::unordered_map<std::string, std::shared_ptr<jvm::ProcessHandle>>     handles_;
+    // Watcher threads that block on handle->wait() and translate exit
+    // events back into UiState. Joined at shutdown.
+    std::vector<std::unique_ptr<std::thread>>                                watchers_;
 };
 
 }
