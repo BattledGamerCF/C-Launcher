@@ -31,7 +31,7 @@ Result<std::string> JavaFinder::detect_version_string(const std::string& java_ex
     auto res = platform::run_process(java_exe, {"-version"}, {}, 5000);
     if (res.is_err()) return Result<std::string>::err(res.error());
     std::string output = res.value().stderr_output + res.value().stdout_output;
-    std::regex ver_re(R"(version "([^"]+)")");
+    std::regex ver_re(R"RX(version "([^"]+)")RX");
     std::smatch m;
     if (std::regex_search(output, m, ver_re))
         return Result<std::string>::ok(m[1].str());

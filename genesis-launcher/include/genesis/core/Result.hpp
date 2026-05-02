@@ -26,6 +26,7 @@ struct Error {
         ProcessError,
         Timeout,
         Cancelled,
+        NotFound,
     };
 
     Code        code   = Code::Unknown;
@@ -46,15 +47,11 @@ template <typename T>
 class Result {
 public:
     static Result ok(T value) {
-        Result r;
-        r.storage_ = std::move(value);
-        return r;
+        return Result(std::variant<T, Error>(std::in_place_index<0>, std::move(value)));
     }
 
     static Result err(Error error) {
-        Result r;
-        r.storage_ = std::move(error);
-        return r;
+        return Result(std::variant<T, Error>(std::in_place_index<1>, std::move(error)));
     }
 
     [[nodiscard]] bool is_ok()  const noexcept { return std::holds_alternative<T>(storage_); }
@@ -104,8 +101,8 @@ public:
     }
 
 private:
+    explicit Result(std::variant<T, Error> v) : storage_(std::move(v)) {}
     std::variant<T, Error> storage_;
-    Result() = default;
 };
 
 template <>

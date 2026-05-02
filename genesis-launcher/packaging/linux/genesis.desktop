@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Genesis
+GenericName=Minecraft Launcher
+Comment=Cross-platform Minecraft launcher with mod and modpack management
+Exec=Genesis
+Icon=genesis
+Terminal=false
+Categories=Game;
+StartupWMClass=Genesis
+StartupNotify=true
+Keywords=minecraft;launcher;mods;

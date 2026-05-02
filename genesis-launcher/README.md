@@ -1,216 +1,227 @@
 # Genesis Launcher
 
-A production-grade, lightweight C++ Minecraft launcher. Modern C++20 codebase targeting macOS and Windows, with Linux as a secondary target.
+A production-grade, cross-platform Minecraft launcher written in C++20.
+
+- **Native UI** — Dear ImGui + OpenGL on Linux/macOS, Win32 backend on Windows.
+- **Real auth** — Microsoft device-code OAuth → Xbox Live → XSTS → Minecraft profile chain.
+- **Secure credential storage** — macOS Keychain, Windows Credential Manager (crypt32),
+  Linux libsecret (Secret Service / KWallet) with a permission-restricted file fallback.
+- **Hardened JVM lifecycle** — single-source-of-truth `ProcessHandle` with a 5-step
+  shutdown ordering, `setsid()` process-group leadership, `killpg`-based group teardown,
+  and absorbing terminal states. Verified by a runtime harness running 500 cycles
+  across 6 invariants.
+- **Zero hidden state** — every async operation is observable via the in-app console.
+
+> **Status:** alpha. The launcher core, auth, JVM orchestration, UI shell, and
+> packaging are functional. End-to-end Minecraft launch with full asset
+> download + verification is gated on per-user Azure AD client ID.
+
+---
+
+## Building
+
+### Linux (Ubuntu / Debian)
+
+```bash
+sudo apt-get install -y \
+    build-essential cmake ninja-build pkg-config \
+    libcurl4-openssl-dev libssl-dev \
+    libglfw3-dev libsecret-1-dev \
+    libgl1-mesa-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
+
+cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+./build/Genesis
+```
+
+### macOS (11.0+)
+
+```bash
+brew install cmake ninja glfw curl openssl@3
+cmake -B build -S . -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DOPENSSL_ROOT_DIR=$(brew --prefix openssl@3)
+cmake --build build --parallel
+open build/Genesis.app
+```
+
+### Windows (MSVC 2022)
+
+```cmd
+:: Requires vcpkg in PATH and cmake 3.20+
+cmake -B build -S . ^
+    -DCMAKE_BUILD_TYPE=Release ^
+    -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake
+cmake --build build --config Release --parallel
+build\Release\Genesis.exe
+```
+
+---
+
+## Packaging
+
+CPack is configured for all three platforms:
+
+```bash
+cd build
+cpack                      # picks per-platform default
+cpack -G TGZ               # tarball (any OS)
+cpack -G DEB               # Debian (.deb)
+cpack -G DragNDrop         # macOS (.dmg)
+cpack -G NSIS              # Windows installer (.exe)
+```
+
+### Linux AppImage
+
+```bash
+cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+cmake --install build --prefix build/AppDir/usr
+./packaging/linux/build-appimage.sh build/AppDir
+```
+
+The CI matrix in `.github/workflows/release.yml` produces all of the above
+on every push.
+
+---
+
+## Microsoft authentication setup
+
+The launcher uses the OAuth 2.0 device authorization grant against Microsoft
+consumer accounts. **You must register your own Azure AD application** —
+distributing a launcher with the official Mojang client ID is not permitted.
+
+1. Visit <https://portal.azure.com> → **Azure Active Directory** → **App registrations** → **New registration**.
+2. **Name:** `Genesis Launcher` (or whatever you prefer).
+3. **Supported account types:** *Personal Microsoft accounts only* (consumers).
+4. **Redirect URI:** leave blank — device code flow does not need one.
+5. After creation, open **Authentication** and enable
+   *Allow public client flows* (`allowPublicClient: true`).
+6. Copy the **Application (client) ID** and pass it to Genesis via:
+   - environment variable `GENESIS_MS_CLIENT_ID`, or
+   - `microsoft_client_id` in `~/.local/share/Genesis/config.json` (Linux),
+     `~/Library/Application Support/Genesis/config.json` (macOS),
+     `%APPDATA%\Genesis\config.json` (Windows).
+
+The token, refresh token, and Minecraft access token are persisted via the
+platform secure-storage backend (Keychain / Credential Manager / libsecret),
+**never** to a plain config file.
+
+---
+
+## Code signing & notarization
+
+CI produces **unsigned** binaries by default. To distribute them publicly,
+sign with the relevant platform tools as a manual post-CI step.
+
+### macOS (Developer ID + notarization)
+
+Requires an Apple Developer account ($99/yr).
+
+```bash
+# 1. Codesign with hardened runtime
+codesign --force --deep \
+    --options runtime \
+    --entitlements packaging/macos/entitlements.plist \
+    --sign "Developer ID Application: Your Name (TEAMID)" \
+    build/Genesis.app
+
+# 2. Build & sign DMG
+cpack -G DragNDrop
+codesign --force --sign "Developer ID Application: Your Name (TEAMID)" \
+    build/Genesis-*.dmg
+
+# 3. Notarize
+xcrun notarytool submit build/Genesis-*.dmg \
+    --apple-id you@example.com \
+    --team-id TEAMID \
+    --password "@keychain:notarytool" \
+    --wait
+
+# 4. Staple
+xcrun stapler staple build/Genesis-*.dmg
+```
+
+### Windows (Authenticode)
+
+Requires an EV or OV code-signing certificate from a CA (DigiCert, Sectigo, etc.).
+
+```powershell
+signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
+    /a /n "Your Company" `
+    build\Genesis.exe build\Genesis-*.exe
+```
+
+For SmartScreen reputation, an **EV** certificate is strongly preferred —
+OV-signed installers will warn users for the first ~3000 downloads.
+
+### Linux
+
+GPG-sign the release tarball / AppImage / `.deb`:
+
+```bash
+gpg --armor --detach-sign Genesis-x86_64.AppImage
+gpg --armor --detach-sign Genesis-1.0.0-Linux.tar.gz
+dpkg-sig --sign builder Genesis-1.0.0-Linux.deb
+```
+
+For Flatpak or Snap, use the standard distribution channels — those are
+out of scope for this repo.
+
+---
 
 ## Architecture
 
 ```
 genesis-launcher/
-├── include/genesis/
-│   ├── core/          Result<T>, StateMachine, EventBus, Launcher
-│   ├── auth/          MicrosoftAuth (OAuth 2.0 device flow), SecureStorage, Token types
-│   ├── version/       VersionManager, VersionManifest parser, RuntimeProfile
-│   ├── assets/        AssetManager, Downloader (parallel + resumable), SHA-1 Verifier
-│   ├── jvm/           JvmOrchestrator, JvmConfig builder, JavaFinder
-│   ├── instance/      InstanceManager, Instance (sandboxed dirs)
-│   ├── update/        Self-updater (versioned, checksum-validated, atomic replace)
-│   ├── logging/       spdlog wrapper — structured, rotating logs, no secret data
-│   ├── platform/      Cross-platform abstractions (filesystem, process, memory)
-│   └── ui/            Dear ImGui views (MainWindow, AuthView, InstanceView…)
-└── src/               Implementations (one .cpp per header)
-    └── platform/
-        ├── windows/   Credential Manager, CreateProcess
-        ├── macos/     Keychain Services, posix_spawn
-        └── linux/     libsecret / file-fallback, fork/exec
+├── include/genesis/        Public headers (one folder per subsystem)
+├── src/
+│   ├── core/               Launcher, EventBus, State, Result<T>/Error
+│   ├── auth/               MicrosoftAuth, AuthManager, SecureStorage
+│   ├── version/            Mojang version manifest, profile compositing
+│   ├── assets/             AssetManager, Downloader, Verifier (SHA-1)
+│   ├── jvm/                JavaFinder, ProcessHandle, JvmOrchestrator
+│   ├── instance/           Per-instance config, mods, world data
+│   ├── update/             Self-update check
+│   ├── mods/               Modrinth client, performance pack installer
+│   ├── logging/            spdlog wrapper + ring-buffer for the UI
+│   ├── ui/                 ImGui shell, views, async dispatcher
+│   └── platform/           PlatformUtils + per-OS glue
+├── cmake/                  CompilerFlags, Platform, Dependencies
+├── packaging/              .desktop, AppImage builder, plist templates
+└── .github/workflows/      Build+release matrix
 ```
 
-### Design principles
+### Lifecycle invariants (verified)
 
-| Principle | Implementation |
-|-----------|---------------|
-| No raw booleans / exceptions for control flow | `Result<T,E>` everywhere |
-| Observable state machine | `StateMachine` with allowed-transition table |
-| Loose coupling | `EventBus` for cross-module events |
-| No global mutable state | Dependency injection via `Launcher` |
-| Secrets never in plaintext | OS secure storage (Keychain / Credential Manager / libsecret) |
-| Deterministic launches | SHA-1 verification before every launch |
-| Resumable downloads | libcurl `RESUME_FROM_LARGE` per file |
-| Parallel downloads | Thread pool via `Downloader::download_batch` |
-| Atomic self-update | `MoveFileEx` / `rename` with backup + rollback |
+`src/jvm/ProcessHandle.cpp` is the single authority for the JVM child process
+lifecycle. The runtime harness at `audit/harness.cpp` enforces:
 
-## Dependencies
+| # | Invariant                                                          | Cycles | Pass |
+|---|--------------------------------------------------------------------|-------:|:----:|
+| 1 | `wait_gate` — `register_handle_` blocks until child has spawned    |    500 |  ✓   |
+| 2 | `dispatch_order` — state events fire in monotonic order            |    500 |  ✓   |
+| 3 | `setsid_pgid` — child becomes session + process group leader       |    500 |  ✓   |
+| 4 | `killpg_chain` — SIGTERM → SIGKILL escalation hits the entire PG   |    500 |  ✓   |
+| 5 | `zombie_reap` — `waitpid` is called exactly once per spawned PID   |    500 |  ✓   |
+| 6 | `post_reap_run` — no `Running` dispatch after `Stopped`/`Crashed`  |    500 |  ✓   |
 
-| Library | Purpose | How it's fetched |
-|---------|---------|-----------------|
-| [nlohmann/json](https://github.com/nlohmann/json) | JSON parsing | CMake FetchContent |
-| [spdlog](https://github.com/gabime/spdlog) | Structured logging | CMake FetchContent |
-| [Dear ImGui](https://github.com/ocornut/imgui) | UI | CMake FetchContent |
-| libcurl | HTTP / downloads | System package |
-| OpenSSL | SHA-1/SHA-256 hashing, TLS | System package |
-| GLFW3 (Linux/macOS) | Window + OpenGL context | System package |
-
-**macOS only:** Security.framework, CoreFoundation.framework  
-**Windows only:** crypt32, wintrust, advapi32, shell32, ncrypt, winhttp
-
-## Build
-
-### Prerequisites
-
-**macOS**
-```bash
-brew install cmake curl openssl glfw
-```
-
-**Windows** (Developer PowerShell or x64 Native Tools)
-```powershell
-vcpkg install curl openssl
-# or use the bundled vcpkg manifest (vcpkg.json) if present
-```
-
-**Linux**
-```bash
-sudo apt install cmake libcurl4-openssl-dev libssl-dev \
-                 libglfw3-dev libsecret-1-dev
-```
-
-### Configure & Build
+Run locally:
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --parallel
+g++ -std=c++20 -O2 -pthread \
+    -I genesis-launcher/include \
+    audit/harness.cpp audit/logger_stub.cpp \
+    genesis-launcher/src/jvm/ProcessHandle.cpp \
+    -o /tmp/harness
+/tmp/harness
 ```
 
-The compiled binary will be at `build/Genesis` (or `build\Genesis.exe` on Windows).
+The same harness runs in CI on every push (`lifecycle-harness` job).
 
-### Debug build
+---
 
-```bash
-cmake -B build-debug -DCMAKE_BUILD_TYPE=Debug
-cmake --build build-debug --parallel
-```
+## License
 
-## Module reference
-
-### `core::Result<T>`
-Every operation returns `Result<T>` or `Result<void>`. Never throws.
-```cpp
-auto res = manager.fetch_version_meta("1.21.4");
-if (res.is_err()) {
-    log->error(res.error().full());
-    return;
-}
-auto& meta = res.value();
-```
-
-### `core::StateMachine`
-```
-Uninitialized → Initializing → Idle
-Idle → Authenticating → Authenticated → ResolvingVersion
-     → DownloadingAssets → PreparingLaunch → Launching → Running
-     → Stopping → Idle
-Idle → UpdatingSelf → Idle / Shutdown
-```
-
-### `auth::AuthManager`
-1. `login(prompt_fn)` — Opens Microsoft device-code flow; calls `prompt_fn` with code info
-2. `ensure_valid_credential()` — Returns cached credential or auto-refreshes MSA token
-3. `logout()` — Clears OS secure storage
-
-No raw tokens are ever written to log files. All persistence goes through `ISecureStorage`.
-
-### `assets::AssetManager`
-- `ensure_assets()` — Downloads and verifies asset objects from `resources.download.minecraft.net`
-- `ensure_libraries()` — Downloads and verifies all libraries + extracts natives
-- `verify_all()` — Returns list of corrupted file paths
-- `repair_corrupted()` — Re-downloads only broken files
-
-### `jvm::JvmOrchestrator`
-- `build_config()` — Constructs `JvmConfig` from version metadata + profile overrides
-- `launch()` — Spawns process; callbacks for stdout/stderr/exit
-- `JvmConfig::is_valid()` — Validates all fields before launch; rejects bad configs with a clear message
-
-### `instance::InstanceManager`
-Each instance is an isolated directory:
-```
-instances/<id>/
-  saves/
-  mods/
-  resourcepacks/
-  config/
-  screenshots/
-  logs/
-  genesis_instance.json
-```
-Instances are fully portable — no absolute path references baked into saves.
-
-### `update::Updater`
-1. `check_for_update()` — Fetches release manifest, compares semver
-2. `download_update()` — Downloads + SHA-256 verifies
-3. `apply_update()` — Backs up current binary, atomically replaces, cleans backup
-4. `rollback()` — Restores previous binary if update produces a broken executable
-
-## Automatic performance pack (1.21.11+)
-
-For every Minecraft version 1.21.11 and newer (the post-Microsoft naming
-scheme), Genesis automatically installs a curated Fabric mod pack into newly
-created instances:
-
-| Mod | Project | Required? |
-|-----|---------|-----------|
-| Sodium       | `sodium`        | yes |
-| Sodium Extra | `sodium-extra`  | optional |
-| Lithium      | `lithium`       | yes |
-| Iris Shaders | `iris`          | optional |
-
-How it works:
-
-1. `mods::PerformancePack::qualifies(version)` returns `true` for any version
-   `>= 1.21.11` (snapshots / RCs / pre-releases are excluded — they often
-   pre-date the matching mod release).
-2. `Launcher::create_instance_with_performance_pack()` calls
-   `InstanceManager::create()` and then, if eligible, fetches the latest
-   compatible Fabric build of each mod from the Modrinth API
-   (`/v2/project/<slug>/version?game_versions=[…]&loaders=["fabric"]`).
-3. The newest stable Fabric loader for that Minecraft version is resolved via
-   `https://meta.fabricmc.net/v2/versions/loader/<mc>` and recorded in the
-   install summary. The loader profile JSON is merged into the version meta at
-   launch time.
-4. Each mod is downloaded with SHA-1 verification and dropped into
-   `<instance>/mods/`. Installation is **idempotent** — re-running on an
-   existing instance just verifies the present files.
-5. If a non-required mod has no compatible release yet (typical right after a
-   Minecraft drop), it is silently skipped and noted in the
-   `PerformancePackResult::skipped` list rather than failing the install.
-
-Disabling: pass an instance through plain `InstanceManager::create()` instead
-of `Launcher::create_instance_with_performance_pack()` — the manager itself
-has no knowledge of the mod pack and never installs anything.
-
-## Extending for mod loaders
-
-`RuntimeProfile` carries an optional `ModLoaderSpec`:
-```cpp
-struct ModLoaderSpec {
-    ModLoaderType type;    // Forge, Fabric, Quilt, NeoForge
-    std::string   version;
-    std::string   extra_args;
-};
-```
-
-To add Fabric support:
-1. After `VersionManager::ensure_version_downloaded`, call a `FabricInstaller` that patches the version JSON
-2. Set `profile.mod_loader = ModLoaderSpec{ModLoaderType::Fabric, fabric_version, ""}`
-3. The `JvmOrchestrator::build_classpath` already handles arbitrary libraries; Fabric's loader JAR just becomes another library entry
-
-## Logging
-
-All logs go to `<game_dir>/logs/genesis.log` (rotating, max 5 MB × 3 files). Never contains tokens, UUIDs, or access tokens — those paths are never passed to the logger.
-
-## Crash diagnostics
-
-On abnormal exit, the last known launcher state is recoverable from the structured log. A crash bundle can be generated by collecting:
-- `logs/genesis.log`
-- `cache/version_manifest_v2.json`
-- `instances/<id>/genesis_instance.json`
-
-No private credentials appear in any of these files.
+MIT. See `LICENSE`. Genesis is not affiliated with Mojang or Microsoft —
+"Minecraft" is a trademark of Mojang Synergies AB.

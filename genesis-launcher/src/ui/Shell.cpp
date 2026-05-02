@@ -79,7 +79,7 @@ static void draw_header(Launcher& /*launcher*/) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2{14, 8});
     ImGui::Begin("##header", nullptr,
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoBringToDisplayFront | ImGuiWindowFlags_NoSavedSettings);
+        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
 
     ImGui::PushStyleColor(ImGuiCol_Text, theme::ACCENT);
     ImGui::SetWindowFontScale(1.30f);
@@ -170,7 +170,7 @@ void render(Launcher& launcher) {
     ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::PANEL_DEEP);
     ImGui::Begin("##nav", nullptr,
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoBringToDisplayFront | ImGuiWindowFlags_NoSavedSettings);
+        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
     views::draw_nav_rail(launcher);
     ImGui::End();
     ImGui::PopStyleColor();
@@ -183,7 +183,7 @@ void render(Launcher& launcher) {
     ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::BG);
     ImGui::Begin("##workspace", nullptr,
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoBringToDisplayFront | ImGuiWindowFlags_NoSavedSettings);
+        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
     draw_workspace(launcher);
     ImGui::End();
     ImGui::PopStyleColor();
@@ -194,7 +194,7 @@ void render(Launcher& launcher) {
     ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::PANEL);
     ImGui::Begin("##inspector", nullptr,
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoBringToDisplayFront | ImGuiWindowFlags_NoSavedSettings);
+        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
     views::draw_inspector(launcher);
     ImGui::End();
     ImGui::PopStyleColor();
@@ -205,7 +205,7 @@ void render(Launcher& launcher) {
     ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::PANEL_DEEP);
     ImGui::Begin("##console", nullptr,
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoBringToDisplayFront | ImGuiWindowFlags_NoSavedSettings);
+        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
     views::draw_console(launcher);
     ImGui::End();
     ImGui::PopStyleColor();

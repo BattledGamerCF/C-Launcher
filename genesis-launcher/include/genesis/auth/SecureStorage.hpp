@@ -3,6 +3,7 @@
 #include "genesis/core/Result.hpp"
 #include <string>
 #include <optional>
+#include <memory>
 
 namespace genesis::auth {
 

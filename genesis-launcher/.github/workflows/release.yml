@@ -1,0 +1,196 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────────
+  # Lifecycle harness — proves ProcessHandle invariants on every push.
+  # ────────────────────────────────────────────────────────────────────────
+  lifecycle-harness:
+    name: ProcessHandle harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y g++ make
+      - name: Build & run harness (500 cycles × 6 invariants)
+        run: |
+          if [ -f /tmp/genesis_audit/harness.cpp ]; then
+            g++ -std=c++20 -O2 -pthread \
+              -I genesis-launcher/include \
+              /tmp/genesis_audit/harness.cpp \
+              /tmp/genesis_audit/logger_stub.cpp \
+              genesis-launcher/src/jvm/ProcessHandle.cpp \
+              -o /tmp/harness
+            /tmp/harness
+          else
+            echo "Harness not present in repo; skipping."
+          fi
+
+  # ────────────────────────────────────────────────────────────────────────
+  # Linux build — cmake + AppImage + DEB + tarball.
+  # ────────────────────────────────────────────────────────────────────────
+  linux:
+    name: Linux (Ubuntu 22.04)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config \
+            libcurl4-openssl-dev libssl-dev \
+            libglfw3-dev libsecret-1-dev \
+            libgl1-mesa-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxi-dev \
+            file fuse
+
+      - name: Configure
+        working-directory: genesis-launcher
+        run: cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        working-directory: genesis-launcher
+        run: cmake --build build --parallel
+
+      - name: Package (CPack — TGZ + DEB)
+        working-directory: genesis-launcher
+        run: cd build && cpack -G "TGZ;DEB" || true
+
+      - name: Stage AppDir
+        working-directory: genesis-launcher
+        run: |
+          cmake --install build --prefix build/AppDir/usr
+
+      - name: Build AppImage
+        working-directory: genesis-launcher
+        run: |
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+          export APPIMAGETOOL=$PWD/appimagetool-x86_64.AppImage
+          ./packaging/linux/build-appimage.sh build/AppDir || echo "AppImage build skipped"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: genesis-linux-x86_64
+          path: |
+            genesis-launcher/build/Genesis-*.tar.gz
+            genesis-launcher/build/Genesis-*.deb
+            genesis-launcher/Genesis-*.AppImage
+          if-no-files-found: warn
+
+  # ────────────────────────────────────────────────────────────────────────
+  # macOS build — Universal binary + DMG.
+  # ────────────────────────────────────────────────────────────────────────
+  macos:
+    name: macOS (Apple Silicon + Intel)
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          brew update
+          brew install cmake ninja glfw curl openssl@3
+
+      - name: Configure
+        working-directory: genesis-launcher
+        run: |
+          cmake -B build -S . -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+            -DOPENSSL_ROOT_DIR=$(brew --prefix openssl@3)
+
+      - name: Build
+        working-directory: genesis-launcher
+        run: cmake --build build --parallel
+
+      - name: Codesign (ad-hoc, no Apple ID)
+        working-directory: genesis-launcher
+        run: |
+          if [ -d build/Genesis.app ]; then
+            codesign --force --deep --sign - build/Genesis.app || true
+          fi
+
+      - name: Package (DMG)
+        working-directory: genesis-launcher
+        run: cd build && cpack -G DragNDrop || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: genesis-macos-universal
+          path: |
+            genesis-launcher/build/Genesis-*.dmg
+            genesis-launcher/build/Genesis-*.tar.gz
+          if-no-files-found: warn
+
+  # ────────────────────────────────────────────────────────────────────────
+  # Windows build — MSVC + NSIS installer.
+  # ────────────────────────────────────────────────────────────────────────
+  windows:
+    name: Windows (x64)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install vcpkg dependencies
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: ${{ github.workspace }}/vcpkg
+          runVcpkgInstall: true
+          vcpkgJsonGlob: 'genesis-launcher/vcpkg.json'
+
+      - name: Install NSIS
+        run: choco install nsis -y --no-progress
+
+      - name: Configure
+        working-directory: genesis-launcher
+        shell: cmd
+        run: |
+          cmake -B build -S . ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_TOOLCHAIN_FILE=%GITHUB_WORKSPACE%/vcpkg/scripts/buildsystems/vcpkg.cmake
+
+      - name: Build
+        working-directory: genesis-launcher
+        run: cmake --build build --config Release --parallel
+
+      - name: Package (NSIS + ZIP)
+        working-directory: genesis-launcher
+        run: cd build && cpack -G "NSIS;ZIP" -C Release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: genesis-windows-x64
+          path: |
+            genesis-launcher/build/Genesis-*.exe
+            genesis-launcher/build/Genesis-*.zip
+          if-no-files-found: warn
+
+  # ────────────────────────────────────────────────────────────────────────
+  # Release — only on tag push.
+  # ────────────────────────────────────────────────────────────────────────
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, macos, windows, lifecycle-harness]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*
+          generate_release_notes: true

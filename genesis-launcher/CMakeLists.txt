@@ -33,6 +33,7 @@ set(GENESIS_SOURCES
     src/jvm/JvmOrchestrator.cpp
     src/jvm/ProcessHandle.cpp
     src/jvm/JavaFinder.cpp
+    src/jvm/JvmConfig.cpp
     src/instance/InstanceManager.cpp
     src/instance/Instance.cpp
     src/update/Updater.cpp
@@ -107,7 +108,65 @@ target_compile_definitions(Genesis PRIVATE
     $<$<BOOL:${GENESIS_PLATFORM_LINUX}>:GENESIS_PLATFORM_LINUX>
 )
 
+genesis_apply_compiler_flags(Genesis)
+
+# ─── Install + packaging ────────────────────────────────────────────────────
+include(GNUInstallDirs)
+
+if(APPLE)
+    set_target_properties(Genesis PROPERTIES
+        MACOSX_BUNDLE                       TRUE
+        MACOSX_BUNDLE_BUNDLE_NAME           "Genesis"
+        MACOSX_BUNDLE_BUNDLE_VERSION        "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING  "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_GUI_IDENTIFIER        "io.genesis.launcher"
+        MACOSX_BUNDLE_COPYRIGHT             "© 2026 Genesis Launcher"
+    )
+endif()
+
 install(TARGETS Genesis
-    RUNTIME DESTINATION bin
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     BUNDLE  DESTINATION .
 )
+
+if(UNIX AND NOT APPLE)
+    install(FILES packaging/linux/genesis.desktop
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/applications
+            OPTIONAL)
+    install(FILES packaging/linux/genesis.png
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps
+            OPTIONAL)
+endif()
+
+# ─── CPack ───────────────────────────────────────────────────────────────────
+set(CPACK_PACKAGE_NAME              "Genesis")
+set(CPACK_PACKAGE_VENDOR            "Genesis Launcher Project")
+set(CPACK_PACKAGE_VERSION           "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Cross-platform Minecraft launcher")
+set(CPACK_PACKAGE_HOMEPAGE_URL      "https://github.com/genesis-launcher/genesis")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "Genesis")
+set(CPACK_PACKAGE_CONTACT           "support@genesis.invalid")
+
+if(WIN32)
+    set(CPACK_GENERATOR "NSIS;ZIP")
+    set(CPACK_NSIS_DISPLAY_NAME       "Genesis")
+    set(CPACK_NSIS_PACKAGE_NAME       "Genesis")
+    set(CPACK_NSIS_INSTALLED_ICON_NAME "bin\\\\Genesis.exe")
+    set(CPACK_NSIS_MUI_FINISHPAGE_RUN "Genesis.exe")
+    set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
+    set(CPACK_NSIS_MODIFY_PATH OFF)
+elseif(APPLE)
+    set(CPACK_GENERATOR "DragNDrop;TGZ")
+    set(CPACK_DMG_VOLUME_NAME         "Genesis ${PROJECT_VERSION}")
+    set(CPACK_DMG_FORMAT              "UDZO")
+    set(CPACK_BUNDLE_NAME             "Genesis")
+else()
+    # Linux: build tarball + DEB; AppImage produced by CI separately.
+    set(CPACK_GENERATOR "TGZ;DEB")
+    set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Genesis Launcher Project <support@genesis.invalid>")
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS    "libc6, libstdc++6, libcurl4, libssl3, libglfw3, libsecret-1-0")
+    set(CPACK_DEBIAN_PACKAGE_SECTION    "games")
+    set(CPACK_DEBIAN_PACKAGE_PRIORITY   "optional")
+endif()
+
+include(CPack)

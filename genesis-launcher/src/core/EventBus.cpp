@@ -1,4 +1,5 @@
 #include "genesis/core/EventBus.hpp"
+#include <algorithm>
 
 namespace genesis::core {
 

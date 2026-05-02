@@ -34,7 +34,7 @@ public:
         if (it == store_.end())
             return Result<std::string>::err(Error::make(Error::Code::IoError,
                                                          "Key not found: " + key));
-        return Result<std::string>::ok(it->second.get<std::string>());
+        return Result<std::string>::ok(it.value().get<std::string>());
     }
 
     Result<void> remove(const std::string& key) override {

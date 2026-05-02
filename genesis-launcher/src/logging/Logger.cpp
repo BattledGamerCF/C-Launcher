@@ -13,7 +13,7 @@ namespace genesis::logging {
 
 namespace {
     std::shared_ptr<spdlog::logger> s_root_logger;
-    std::unordered_map<std::string, std::shared_ptr<spdlog::logger>> s_loggers;
+    std::unordered_map<std::string, std::shared_ptr<Logger>> s_loggers;
     std::mutex s_mutex;
 }
 
