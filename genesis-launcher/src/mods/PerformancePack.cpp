@@ -40,9 +40,7 @@ bool PerformancePack::qualifies(const std::string& mc_version) {
     int minor = std::stoi(m[2].str());
     int patch = m[3].matched ? std::stoi(m[3].str()) : 0;
 
-    // Strict ordering: (major, minor, patch) >= (1, 21, 11)
-    if (major != 1) return major > 1;
-    if (minor != 21) return minor > 21;
+    if (major != 1 || minor != 21) return false;
     return patch >= 11;
 }
 
