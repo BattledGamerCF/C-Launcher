@@ -1,0 +1,117 @@
+PRE-RELEASE VALIDATION — NON-TTY CRASH (SIGFPE) INVESTIGATION
+
+We are preparing to tag a release for the C++ launcher.
+
+There is a known issue:
+- SIGFPE occurs during static initialization
+- Happens when stdout/stderr are NOT attached to a TTY
+- Occurs BEFORE main() executes
+- Observed in Nix (glibc 2.40 environment)
+
+This is currently assumed to be environment-specific, but NOT proven.
+
+Your task is to VERIFY or DISPROVE that assumption using real execution evidence.
+
+────────────────────────────────────────────
+
+1. REPRODUCTION TESTS (REQUIRED)
+
+Run the launcher binary in the following modes on a standard Linux environment (NOT Nix if possible):
+
+A. Normal run:
+    ./genesis
+
+B. Stdout redirected:
+    ./genesis > /dev/null
+
+C. Full stdio detached:
+    setsid ./genesis
+
+D. Simulated GUI launch:
+    nohup ./genesis >/dev/null 2>&1 &
+
+For each case:
+- Record: exit code, crash/no crash, any signals
+- Confirm whether main() executes (add minimal logging if needed)
+
+────────────────────────────────────────────
+
+2. ROOT CAUSE TRIAGE (IF CRASH REPRODUCES)
+
+If ANY test crashes:
+
+- Identify which static initializer is responsible
+- Likely suspects:
+    - spdlog initialization
+    - fmt formatting width calculations
+    - terminal size / ioctl assumptions
+    - division by zero in non-TTY code paths
+
+- Provide:
+    - exact file + function
+    - why non-TTY triggers the fault
+    - minimal fix (do NOT refactor large subsystems)
+
+────────────────────────────────────────────
+
+3. FIX (ONLY IF CONFIRMED REAL ISSUE)
+
+Apply the smallest safe fix:
+
+Examples:
+- guard terminal width queries
+- fallback to constant width if !isatty()
+- defer problematic initialization until after main()
+
+Constraints:
+- NO architectural changes
+- NO logging system rewrite
+- NO unrelated refactors
+
+────────────────────────────────────────────
+
+4. VERIFICATION
+
+Re-run ALL four test modes after fix.
+
+Must show:
+- zero crashes
+- consistent behavior across modes
+
+────────────────────────────────────────────
+
+5. FINAL CLASSIFICATION
+
+Return one of:
+
+A. "NIX-SPECIFIC — SAFE TO SHIP"
+   → include proof (all tests pass on standard Linux)
+
+B. "REAL BUG — FIXED"
+   → include root cause + patch summary
+
+C. "REAL BUG — NOT FIXED"
+   → explain why and recommend blocking release
+
+────────────────────────────────────────────
+
+OUTPUT FORMAT
+
+Return ONLY:
+
+1. Test results table (A–D)
+2. Crash reproducibility verdict
+3. Root cause (if applicable)
+4. Fix summary (if applied)
+5. Final classification (A/B/C)
+
+────────────────────────────────────────────
+
+DO NOT:
+
+- Assume it's Nix-specific without testing
+- Ignore pre-main crashes
+- Change unrelated code
+- Skip detached/GUI-like execution cases
+
+This is a release-blocking validation step.
