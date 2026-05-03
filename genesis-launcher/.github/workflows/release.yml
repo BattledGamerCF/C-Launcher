@@ -101,6 +101,10 @@ jobs:
           brew update
           brew install cmake ninja glfw curl openssl@3
 
+      - name: Generate macOS .icns from PNG source
+        working-directory: genesis-launcher
+        run: bash packaging/macos/make-icns.sh
+
       - name: Configure
         working-directory: genesis-launcher
         run: |

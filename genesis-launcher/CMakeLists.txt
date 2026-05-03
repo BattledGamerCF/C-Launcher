@@ -1,9 +1,15 @@
 cmake_minimum_required(VERSION 3.20)
 
+if(WIN32)
+    set(_GENESIS_LANGS CXX RC)
+else()
+    set(_GENESIS_LANGS CXX)
+endif()
+
 project(Genesis
     VERSION 1.0.0
     DESCRIPTION "Genesis Minecraft Launcher"
-    LANGUAGES CXX
+    LANGUAGES ${_GENESIS_LANGS}
 )
 
 set(CMAKE_CXX_STANDARD 20)
@@ -65,6 +71,7 @@ if(GENESIS_PLATFORM_WINDOWS)
     list(APPEND GENESIS_SOURCES src/platform/windows/SecureStorage_Win.cpp)
     list(APPEND GENESIS_SOURCES src/platform/windows/ProcessSpawn_Win.cpp)
     list(APPEND GENESIS_SOURCES src/platform/windows/JavaFinder_Win.cpp)
+    list(APPEND GENESIS_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/packaging/windows/genesis.rc)
 elseif(GENESIS_PLATFORM_MACOS)
     list(APPEND GENESIS_SOURCES src/platform/macos/SecureStorage_Mac.cpp)
     list(APPEND GENESIS_SOURCES src/platform/macos/ProcessSpawn_Mac.cpp)
@@ -114,6 +121,7 @@ genesis_apply_compiler_flags(Genesis)
 include(GNUInstallDirs)
 
 if(APPLE)
+    set(GENESIS_MAC_ICON "${CMAKE_CURRENT_SOURCE_DIR}/packaging/macos/genesis.icns")
     set_target_properties(Genesis PROPERTIES
         MACOSX_BUNDLE                       TRUE
         MACOSX_BUNDLE_BUNDLE_NAME           "Genesis"
@@ -121,7 +129,13 @@ if(APPLE)
         MACOSX_BUNDLE_SHORT_VERSION_STRING  "${PROJECT_VERSION}"
         MACOSX_BUNDLE_GUI_IDENTIFIER        "io.genesis.launcher"
         MACOSX_BUNDLE_COPYRIGHT             "© 2026 Genesis Launcher"
+        MACOSX_BUNDLE_ICON_FILE             "genesis.icns"
     )
+    if(EXISTS "${GENESIS_MAC_ICON}")
+        target_sources(Genesis PRIVATE "${GENESIS_MAC_ICON}")
+        set_source_files_properties("${GENESIS_MAC_ICON}" PROPERTIES
+            MACOSX_PACKAGE_LOCATION "Resources")
+    endif()
 endif()
 
 install(TARGETS Genesis

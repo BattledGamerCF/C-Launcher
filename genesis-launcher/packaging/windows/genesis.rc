@@ -1,0 +1,4 @@
+// Embed application icon. The .rc compiler resolves relative paths against
+// the directory containing this .rc file, so a bare filename works for both
+// MSVC's rc.exe and MinGW's windres.
+IDI_ICON1 ICON DISCARDABLE "genesis.ico"
