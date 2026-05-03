@@ -109,7 +109,99 @@ platform secure-storage backend (Keychain / Credential Manager / libsecret),
 
 ---
 
-## Code signing & notarization
+## First-time install (for end users)
+
+Genesis is distributed **unsigned** — the project doesn't pay Apple's $99/yr
+or buy a Windows code-signing certificate. The app itself is the same on every
+download; the only difference vs. signed apps is what your operating system
+shows the first time you run it. After that first run, your OS remembers and
+launches Genesis silently like any other app.
+
+### Linux
+
+Just run it.
+
+**AppImage:**
+```bash
+chmod +x Genesis-x86_64.AppImage
+./Genesis-x86_64.AppImage
+```
+
+**.deb:**
+```bash
+sudo dpkg -i genesis_1.0.0_amd64.deb
+genesis
+```
+
+No warnings, no extra steps.
+
+### Windows
+
+You'll see a blue **"Windows protected your PC"** popup from SmartScreen the
+first time. This happens to every unsigned app, including most indie tools on
+GitHub. The app is fine — Microsoft just hasn't seen enough downloads of it
+yet to recognize it.
+
+1. Double-click `Genesis-Setup.exe`.
+2. When the blue SmartScreen window appears, click **"More info"** (small text
+   under the message).
+3. Click the **"Run anyway"** button that appears.
+4. The installer opens normally. Finish setup.
+
+After install, launching Genesis from the Start menu shows no warnings.
+
+### macOS — please read before downloading
+
+**Heads up:** macOS is the strictest of the three. Because Genesis isn't
+signed with an Apple Developer ID, the first time you try to open it you will
+**not** see the friendly *"Genesis was downloaded from the internet, are you
+sure?"* dialog that signed apps get. Instead, modern macOS (Ventura and
+newer) shows a scary message that looks like the app is broken:
+
+> **"Genesis" is damaged and can't be opened. You should move it to the Trash.**
+
+**The app is not damaged.** macOS shows this message for any app downloaded
+from the web that isn't signed and notarized by Apple. The fix takes about 10
+seconds. Pick whichever method you're comfortable with:
+
+#### Method 1 — System Settings (easiest, no terminal)
+
+1. Drag `Genesis.app` from the `.dmg` into your Applications folder as usual.
+2. Try to open it (you'll get the "damaged" message — that's expected). Click **Done** / **OK**.
+3. Open **System Settings → Privacy & Security**.
+4. Scroll down to the **Security** section. You'll see a line that says
+   *"Genesis was blocked to protect your Mac."*
+5. Click **"Open Anyway"** next to that line.
+6. Confirm with your password / Touch ID.
+7. Genesis launches. From now on it opens normally with a double-click.
+
+#### Method 2 — Right-click Open (sometimes works on older macOS)
+
+1. In Finder, **right-click** (or Control-click) `Genesis.app` → **Open**.
+2. In the dialog that appears, click **Open**.
+3. *If you don't get an "Open" button*, fall back to Method 1 or Method 3.
+
+#### Method 3 — One-line Terminal command (always works)
+
+Open the **Terminal** app and paste:
+
+```bash
+xattr -cr /Applications/Genesis.app
+```
+
+This removes the "downloaded from the internet" quarantine flag macOS attaches
+to web downloads. After running it, double-click Genesis as normal.
+
+#### Why not just sign it?
+
+Apple charges $99/year for a Developer ID — and even then every release has
+to be sent to Apple's notarization service before it'll run cleanly on users'
+Macs. Genesis is a free, open project; if that ever changes the install will
+become a single double-click on macOS too.
+
+---
+
+## Code signing & notarization (for maintainers)
 
 CI produces **unsigned** binaries by default. To distribute them publicly,
 sign with the relevant platform tools as a manual post-CI step.
