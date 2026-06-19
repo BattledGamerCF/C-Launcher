@@ -1,24 +1,90 @@
-name: Build Launcher
+name: Build C-Launcher
 
 on:
   push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
-  windows:
-    runs-on: windows-latest
+  build-windows:
+    name: Windows Build
+    runs-on: windows-2025
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Configure
-        run: cmake -B build
+      - name: Setup CMake
+        uses: lukka/get-cmake@v3
 
-      - name: Build
+      - name: Configure CMake
+        run: cmake -S genesis-launcher -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build launcher
         run: cmake --build build --config Release
 
-      - name: Upload Artifacts
+      - name: Package executable
+        run: |
+          mkdir package
+          copy build\Release\*.exe package\
+
+      - name: Upload Windows executable
         uses: actions/upload-artifact@v4
         with:
           name: C-Launcher-Windows
-          path: build
+          path: package/
+
+
+  build-linux:
+    name: Linux Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y cmake build-essential libglfw3-dev
+
+      - name: Configure CMake
+        run: cmake -S genesis-launcher -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build launcher
+        run: cmake --build build --config Release
+
+      - name: Upload Linux binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: C-Launcher-Linux
+          path: build/
+
+
+  build-macos:
+    name: macOS Build
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          brew install cmake glfw
+
+      - name: Configure CMake
+        run: cmake -S genesis-launcher -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build launcher
+        run: cmake --build build --config Release
+
+      - name: Upload macOS build
+        uses: actions/upload-artifact@v4
+        with:
+          name: C-Launcher-macOS
+          path: build/
