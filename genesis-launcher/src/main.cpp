@@ -1,3 +1,4 @@
+#include <GLFW/glfw3.h>
 #include "genesis/core/Launcher.hpp"
 #include "genesis/ui/MainWindow.hpp"
 #include "genesis/ui/Shell.hpp"
